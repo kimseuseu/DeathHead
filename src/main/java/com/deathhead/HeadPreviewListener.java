@@ -61,39 +61,14 @@ public class HeadPreviewListener implements Listener {
     private void openPreviewGUI(Player player, HeadData data) {
         List<ItemStack> items = data.getItems();
 
-        // GUI 크기: 아이템 수에 맞춰 (최소 1줄, 최대 6줄)
-        int rows = Math.max(1, Math.min(6, (int) Math.ceil((items.size() + 2) / 9.0)));
+        int rows = Math.max(1, Math.min(6, (items.size() + 8) / 9));
         int size = rows * 9;
 
         String title = GUI_TITLE_PREFIX + data.getOwnerName();
         Inventory gui = Bukkit.createInventory(null, size, title);
 
-        // 정보 아이템 (첫 슬롯)
-        ItemStack info = new ItemStack(Material.PAPER);
-        ItemMeta infoMeta = info.getItemMeta();
-        if (infoMeta != null) {
-            infoMeta.setDisplayName("§e§l봉인 정보");
-
-            String remainStr = DeathListener.formatRemaining(data.getExpiresAt());
-
-            infoMeta.setLore(List.of(
-                    "",
-                    "§7사망자: §f" + data.getOwnerName(),
-                    "§7사망 위치: §f" + data.getDeathWorld() + " §7[§f" + data.getDeathX() + "§7, §f" + data.getDeathY() + "§7, §f" + data.getDeathZ() + "§7]",
-                    "",
-                    "§7남은 시간: §f" + remainStr,
-                    "",
-                    "§c⚠ 부패 시 아이템이 영구 유실됩니다!",
-                    "",
-                    "§7봉인 아이템: §f" + items.size() + "개"
-            ));
-            info.setItemMeta(infoMeta);
-        }
-        gui.setItem(0, info);
-
-        // 봉인된 아이템 배치 (슬롯 2부터)
-        for (int i = 0; i < items.size() && (i + 2) < size; i++) {
-            gui.setItem(i + 2, items.get(i).clone());
+        for (int i = 0; i < items.size() && i < size; i++) {
+            gui.setItem(i, items.get(i).clone());
         }
 
         player.openInventory(gui);

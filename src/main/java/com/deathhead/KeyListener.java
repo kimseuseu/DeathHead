@@ -12,8 +12,13 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+
+import java.util.Iterator;
+import java.util.List;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -31,34 +36,60 @@ public class KeyListener implements Listener {
         this.plugin = plugin;
     }
 
-    /** 봉인된 머리 블록 파괴 시 PDC 보존된 아이템으로 드롭 */
+    /** 플레이어가 봉인된 머리 블록 파괴 */
     @EventHandler
     public void onHeadBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
-        if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) return;
+        if (!isSealedHead(block)) return;
+        event.setDropItems(false);
+        dropPreservedHead(block);
+    }
+
+    /** 엔티티 폭발 (크리퍼, TNT 등) */
+    @EventHandler
+    public void onEntityExplode(EntityExplodeEvent event) {
+        handleExplodedBlocks(event.blockList());
+    }
+
+    /** 블록 폭발 (침대, 리스폰 앵커 등) */
+    @EventHandler
+    public void onBlockExplode(BlockExplodeEvent event) {
+        handleExplodedBlocks(event.blockList());
+    }
+
+    private void handleExplodedBlocks(List<Block> blocks) {
+        Iterator<Block> it = blocks.iterator();
+        while (it.hasNext()) {
+            Block block = it.next();
+            if (!isSealedHead(block)) continue;
+            it.remove(); // 기본 드롭 방지
+            dropPreservedHead(block);
+        }
+    }
+
+    private boolean isSealedHead(Block block) {
+        if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) return false;
+        if (!(block.getState() instanceof Skull skull)) return false;
+        return skull.getPersistentDataContainer().has(plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
+    }
+
+    private void dropPreservedHead(Block block) {
         if (!(block.getState() instanceof Skull skull)) return;
 
         String headId = skull.getPersistentDataContainer().get(
                 plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
         if (headId == null) return;
 
-        // 기본 드롭 취소
-        event.setDropItems(false);
-
-        // PDC 보존된 머리 아이템 생성
         ItemStack headItem = new ItemStack(Material.PLAYER_HEAD, 1);
         SkullMeta meta = (SkullMeta) headItem.getItemMeta();
         if (meta == null) return;
 
-        // 원본 스킨 복사
         org.bukkit.profile.PlayerProfile profile = skull.getOwnerProfile();
-        if (profile != null) {
-            meta.setOwnerProfile(profile);
-        }
+        if (profile != null) meta.setOwnerProfile(profile);
+
         meta.getPersistentDataContainer().set(
                 plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING, headId);
 
-        // HeadData에서 lore 복원
         HeadData data = plugin.getHeadStorage().get(headId);
         if (data != null) {
             meta.displayName(Component.text(data.getOwnerName(), NamedTextColor.RED)
@@ -72,7 +103,6 @@ public class KeyListener implements Listener {
 
         headItem.setItemMeta(meta);
 
-        // 아이템 드롭
         Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
         block.getWorld().dropItemNaturally(dropLoc, headItem);
     }

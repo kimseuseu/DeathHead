@@ -26,12 +26,14 @@ public class HeadStorage {
         File[] files = headsFolder.listFiles((dir, name) -> name.endsWith(".yml"));
         if (files == null) return;
 
+        int expired = 0;
         for (File file : files) {
             try {
                 HeadData data = readFile(file);
                 if (data == null) continue;
                 if (data.isExpired()) {
                     file.delete();
+                    expired++;
                 } else {
                     cache.put(data.getHeadId(), data);
                 }
@@ -39,7 +41,7 @@ public class HeadStorage {
                 plugin.getLogger().log(Level.WARNING, "Failed to load: " + file.getName(), e);
             }
         }
-        plugin.getLogger().info("Loaded " + cache.size() + " head(s).");
+        plugin.getLogger().info("Loaded " + cache.size() + " head(s), cleaned " + expired + " expired.");
     }
 
     public HeadData get(String headId) {
