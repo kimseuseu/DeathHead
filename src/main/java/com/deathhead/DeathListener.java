@@ -33,6 +33,9 @@ import org.bukkit.util.Transformation;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryOpenEvent;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -48,11 +51,24 @@ public class DeathListener implements Listener {
     private final NamespacedKey expiresAtKey;
     private final Map<UUID, Long> deathCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, GameMode> animatingPlayers = new ConcurrentHashMap<>();
+    private final Set<UUID> inventoryOpen = ConcurrentHashMap.newKeySet();
 
     public DeathListener(DeathHeadPlugin plugin) {
         this.plugin = plugin;
         this.headIdKey = new NamespacedKey(plugin, "head_id");
         this.expiresAtKey = new NamespacedKey(plugin, "expires_at");
+    }
+
+    // ─── 인벤토리 열림/닫힘 추적 ───
+
+    @EventHandler
+    public void onInventoryOpen(InventoryOpenEvent event) {
+        inventoryOpen.add(event.getPlayer().getUniqueId());
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        inventoryOpen.remove(event.getPlayer().getUniqueId());
     }
 
     // ─── 실시간 lore 갱신 ───
@@ -63,6 +79,7 @@ public class DeathListener implements Listener {
 
     private void updateAllHeadLores() {
         for (Player player : Bukkit.getOnlinePlayers()) {
+            if (!inventoryOpen.contains(player.getUniqueId())) continue;
             updatePlayerHeadLores(player);
         }
     }
