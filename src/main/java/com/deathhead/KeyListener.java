@@ -1,5 +1,8 @@
 package com.deathhead;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -8,6 +11,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
@@ -25,6 +29,52 @@ public class KeyListener implements Listener {
 
     public KeyListener(DeathHeadPlugin plugin) {
         this.plugin = plugin;
+    }
+
+    /** 봉인된 머리 블록 파괴 시 PDC 보존된 아이템으로 드롭 */
+    @EventHandler
+    public void onHeadBreak(BlockBreakEvent event) {
+        Block block = event.getBlock();
+        if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) return;
+        if (!(block.getState() instanceof Skull skull)) return;
+
+        String headId = skull.getPersistentDataContainer().get(
+                plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
+        if (headId == null) return;
+
+        // 기본 드롭 취소
+        event.setDropItems(false);
+
+        // PDC 보존된 머리 아이템 생성
+        ItemStack headItem = new ItemStack(Material.PLAYER_HEAD, 1);
+        SkullMeta meta = (SkullMeta) headItem.getItemMeta();
+        if (meta == null) return;
+
+        // 원본 스킨 복사
+        org.bukkit.profile.PlayerProfile profile = skull.getOwnerProfile();
+        if (profile != null) {
+            meta.setOwnerProfile(profile);
+        }
+        meta.getPersistentDataContainer().set(
+                plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING, headId);
+
+        // HeadData에서 lore 복원
+        HeadData data = plugin.getHeadStorage().get(headId);
+        if (data != null) {
+            meta.displayName(Component.text(data.getOwnerName(), NamedTextColor.RED)
+                    .append(Component.text("의 머리", NamedTextColor.GRAY))
+                    .decoration(TextDecoration.ITALIC, false));
+            meta.lore(plugin.getDeathListener().buildSkullLore(data.getItems(), data.getExpiresAt()));
+            meta.getPersistentDataContainer().set(
+                    plugin.getDeathListener().getExpiresAtKey(), PersistentDataType.LONG, data.getExpiresAt());
+            meta.setMaxStackSize(1);
+        }
+
+        headItem.setItemMeta(meta);
+
+        // 아이템 드롭
+        Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
+        block.getWorld().dropItemNaturally(dropLoc, headItem);
     }
 
     /** 머리 아이템 설치 시 PDC를 블록 TileEntity에 복사 */
@@ -89,10 +139,7 @@ public class KeyListener implements Listener {
         HeadData data = plugin.getHeadStorage().get(headId);
 
         if (data == null) {
-            // 부패했거나 이미 회수됨
-            String msg = plugin.getConfig().getString("messages.expired",
-                    "§7이 머리는 이미 부패했습니다.");
-            player.sendMessage(msg.replace('&', '§'));
+            player.sendMessage(plugin.getMessage("expired", "§7이 머리는 이미 부패했습니다."));
             return;
         }
 
@@ -118,9 +165,7 @@ public class KeyListener implements Listener {
         plugin.getHeadStorage().remove(headId);
 
         // 회수 메시지
-        String msg = plugin.getConfig().getString("messages.retrieve",
-                "§a유실된 아이템을 되찾았습니다!");
-        player.sendMessage(msg.replace('&', '§'));
+        player.sendMessage(plugin.getMessage("retrieve", "§a유실된 아이템을 되찾았습니다!"));
 
         // 회수 이펙트
         block.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, dropLoc, 15, 0.3, 0.3, 0.3, 0);

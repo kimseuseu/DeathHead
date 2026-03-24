@@ -38,7 +38,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
 
     private void handleKey(CommandSender sender, String[] args) {
         if (!sender.hasPermission("deathhead.admin")) {
-            sender.sendMessage("§c권한이 없습니다.");
+            sender.sendMessage(plugin.getMessage("no-permission", "§c권한이 없습니다."));
             return;
         }
 
@@ -48,14 +48,15 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         if (args.length >= 2) {
             target = Bukkit.getPlayer(args[1]);
             if (target == null) {
-                sender.sendMessage("§c플레이어를 찾을 수 없습니다: " + args[1]);
+                sender.sendMessage(plugin.getMessage("player-not-found",
+                        "§c플레이어를 찾을 수 없습니다: {player}", "{player}", args[1]));
                 return;
             }
             if (args.length >= 3) {
                 try {
                     amount = Integer.parseInt(args[2]);
                 } catch (NumberFormatException e) {
-                    sender.sendMessage("§c올바른 숫자를 입력하세요.");
+                    sender.sendMessage(plugin.getMessage("invalid-number", "§c올바른 숫자를 입력하세요."));
                     return;
                 }
             }
@@ -67,15 +68,18 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         }
 
         target.getInventory().addItem(plugin.getKeyItem().createKey(amount));
-        sender.sendMessage("§a" + target.getName() + "에게 머리 열쇠 " + amount + "개를 지급했습니다.");
+        sender.sendMessage(plugin.getMessage("key-given",
+                "§a{player}에게 머리 열쇠 {amount}개를 지급했습니다.",
+                "{player}", target.getName(), "{amount}", String.valueOf(amount)));
         if (sender != target) {
-            target.sendMessage("§a머리 열쇠 " + amount + "개를 받았습니다.");
+            target.sendMessage(plugin.getMessage("key-received",
+                    "§a머리 열쇠 {amount}개를 받았습니다.", "{amount}", String.valueOf(amount)));
         }
     }
 
     private void handleTicket(CommandSender sender, String[] args) {
         if (!sender.hasPermission("deathhead.admin")) {
-            sender.sendMessage("§c권한이 없습니다.");
+            sender.sendMessage(plugin.getMessage("no-permission", "§c권한이 없습니다."));
             return;
         }
 
@@ -85,14 +89,15 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         if (args.length >= 2) {
             target = Bukkit.getPlayer(args[1]);
             if (target == null) {
-                sender.sendMessage("§c플레이어를 찾을 수 없습니다: " + args[1]);
+                sender.sendMessage(plugin.getMessage("player-not-found",
+                        "§c플레이어를 찾을 수 없습니다: {player}", "{player}", args[1]));
                 return;
             }
             if (args.length >= 3) {
                 try {
                     amount = Integer.parseInt(args[2]);
                 } catch (NumberFormatException e) {
-                    sender.sendMessage("§c올바른 숫자를 입력하세요.");
+                    sender.sendMessage(plugin.getMessage("invalid-number", "§c올바른 숫자를 입력하세요."));
                     return;
                 }
             }
@@ -104,19 +109,22 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         }
 
         target.getInventory().addItem(plugin.createProtectionTicket(amount));
-        sender.sendMessage("§a" + target.getName() + "에게 사망 방지권 " + amount + "개를 지급했습니다.");
+        sender.sendMessage(plugin.getMessage("ticket-given",
+                "§a{player}에게 사망 방지권 {amount}개를 지급했습니다.",
+                "{player}", target.getName(), "{amount}", String.valueOf(amount)));
         if (sender != target) {
-            target.sendMessage("§b사망 패널티 방지권 " + amount + "개를 받았습니다.");
+            target.sendMessage(plugin.getMessage("ticket-received",
+                    "§b사망 패널티 방지권 {amount}개를 받았습니다.", "{amount}", String.valueOf(amount)));
         }
     }
 
     private void handleReload(CommandSender sender) {
         if (!sender.hasPermission("deathhead.admin")) {
-            sender.sendMessage("§c권한이 없습니다.");
+            sender.sendMessage(plugin.getMessage("no-permission", "§c권한이 없습니다."));
             return;
         }
-        plugin.reloadConfig();
-        sender.sendMessage("§aDeathHead 설정을 리로드했습니다.");
+        plugin.reloadAllConfigs();
+        sender.sendMessage(plugin.getMessage("config-reloaded", "§aDeathHead 설정을 리로드했습니다."));
     }
 
     private void sendHelp(CommandSender sender) {

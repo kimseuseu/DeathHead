@@ -6,6 +6,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class KeyItem {
@@ -21,24 +22,23 @@ public class KeyItem {
     }
 
     public ItemStack createKey(int amount) {
-        String materialName = plugin.getConfig().getString("key.material", "TRIPWIRE_HOOK");
+        String materialName = plugin.getItemsConfig().getString("key.material", "TRIPWIRE_HOOK");
         Material material = Material.valueOf(materialName.toUpperCase());
 
         ItemStack item = new ItemStack(material, amount);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            String name = plugin.getConfig().getString("key.name", "§6머리 열쇠");
-            meta.setDisplayName(name.replace('&', '§'));
+            meta.setDisplayName(plugin.getItemString("key.name", "§6머리 열쇠"));
 
-            meta.setLore(List.of(
-                    "§7사망한 플레이어의 머리에 사용하면",
-                    "§7봉인된 아이템을 회수할 수 있습니다."
-            ));
-
-            int cmd = plugin.getConfig().getInt("key.custom-model-data", 0);
-            if (cmd > 0) {
-                meta.setCustomModelData(cmd);
+            List<String> rawLore = plugin.getItemsConfig().getStringList("key.lore");
+            if (!rawLore.isEmpty()) {
+                List<String> lore = new ArrayList<>();
+                for (String line : rawLore) lore.add(line.replace('&', '§'));
+                meta.setLore(lore);
             }
+
+            int cmd = plugin.getItemsConfig().getInt("key.custom-model-data", 0);
+            if (cmd > 0) meta.setCustomModelData(cmd);
 
             meta.getPersistentDataContainer().set(keyKey, PersistentDataType.BYTE, (byte) 1);
             item.setItemMeta(meta);
@@ -53,7 +53,5 @@ public class KeyItem {
         return meta.getPersistentDataContainer().has(keyKey, PersistentDataType.BYTE);
     }
 
-    public NamespacedKey getKeyKey() {
-        return keyKey;
-    }
+    public NamespacedKey getKeyKey() { return keyKey; }
 }

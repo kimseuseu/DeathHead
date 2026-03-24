@@ -3,6 +3,8 @@ package com.deathhead;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.ShapedRecipe;
@@ -10,6 +12,11 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 
 public class DeathHeadPlugin extends JavaPlugin {
@@ -19,10 +26,15 @@ public class DeathHeadPlugin extends JavaPlugin {
     private KeyListener keyListener;
     private DeathListener deathListener;
     private NamespacedKey protectionKey;
+    private FileConfiguration messagesConfig;
+    private FileConfiguration itemsConfig;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        saveResourceIfAbsent("messages.yml");
+        saveResourceIfAbsent("items.yml");
+        loadCustomConfigs();
 
         protectionKey = new NamespacedKey(this, "protection_ticket");
         keyItem = new KeyItem(this);
@@ -38,6 +50,8 @@ public class DeathHeadPlugin extends JavaPlugin {
         pm.registerEvents(new JoinListener(this), this);
         pm.registerEvents(new HeadPreviewListener(this), this);
 
+        deathListener.startLoreUpdater();
+
         CommandHandler cmdHandler = new CommandHandler(this);
         getCommand("dh").setExecutor(cmdHandler);
         getCommand("dh").setTabCompleter(cmdHandler);
@@ -52,6 +66,32 @@ public class DeathHeadPlugin extends JavaPlugin {
         Bukkit.getConsoleSender().sendMessage("§c[DeathHead] §7비활성화 — 데이터 저장 완료");
     }
 
+    public void reloadAllConfigs() {
+        reloadConfig();
+        loadCustomConfigs();
+    }
+
+    private void loadCustomConfigs() {
+        messagesConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "messages.yml"));
+        itemsConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "items.yml"));
+
+        InputStream msgDefaults = getResource("messages.yml");
+        if (msgDefaults != null) {
+            messagesConfig.setDefaults(YamlConfiguration.loadConfiguration(
+                    new InputStreamReader(msgDefaults, StandardCharsets.UTF_8)));
+        }
+        InputStream itemDefaults = getResource("items.yml");
+        if (itemDefaults != null) {
+            itemsConfig.setDefaults(YamlConfiguration.loadConfiguration(
+                    new InputStreamReader(itemDefaults, StandardCharsets.UTF_8)));
+        }
+    }
+
+    private void saveResourceIfAbsent(String resourceName) {
+        File file = new File(getDataFolder(), resourceName);
+        if (!file.exists()) saveResource(resourceName, false);
+    }
+
     private void registerKeyRecipe() {
         NamespacedKey recipeKey = new NamespacedKey(this, "head_key_recipe");
         ShapedRecipe recipe = new ShapedRecipe(recipeKey, keyItem.createKey(1));
@@ -63,18 +103,22 @@ public class DeathHeadPlugin extends JavaPlugin {
     }
 
     public ItemStack createProtectionTicket(int amount) {
-        ItemStack item = new ItemStack(Material.PAPER, amount);
+        String materialName = itemsConfig.getString("protection-ticket.material", "PAPER");
+        Material material = Material.valueOf(materialName.toUpperCase());
+
+        ItemStack item = new ItemStack(material, amount);
         ItemMeta meta = item.getItemMeta();
         if (meta == null) return item;
 
-        meta.setDisplayName("§b사망 패널티 방지권");
-        meta.setLore(List.of(
-                "",
-                "§7사망 시 자동으로 사용되어",
-                "§7아이템 유실을 방지합니다.",
-                "",
-                "§8소모품 — 사망 시 1개 소모"
-        ));
+        meta.setDisplayName(getItemString("protection-ticket.name", "§b사망 패널티 방지권"));
+
+        List<String> rawLore = itemsConfig.getStringList("protection-ticket.lore");
+        if (!rawLore.isEmpty()) {
+            List<String> lore = new ArrayList<>();
+            for (String line : rawLore) lore.add(line.replace('&', '§'));
+            meta.setLore(lore);
+        }
+
         meta.getPersistentDataContainer().set(protectionKey, PersistentDataType.BYTE, (byte) 1);
         meta.addItemFlags(ItemFlag.values());
         item.setItemMeta(meta);
@@ -97,6 +141,25 @@ public class DeathHeadPlugin extends JavaPlugin {
         console.sendMessage("");
     }
 
+    // ─── 설정 헬퍼 ───
+
+    public String getMessage(String key, String defaultMsg) {
+        return messagesConfig.getString(key, defaultMsg).replace('&', '§');
+    }
+
+    public String getMessage(String key, String defaultMsg, String... replacements) {
+        String msg = getMessage(key, defaultMsg);
+        for (int i = 0; i < replacements.length - 1; i += 2) {
+            msg = msg.replace(replacements[i], replacements[i + 1]);
+        }
+        return msg;
+    }
+
+    public String getItemString(String key, String defaultVal) {
+        return itemsConfig.getString(key, defaultVal).replace('&', '§');
+    }
+
+    public FileConfiguration getItemsConfig() { return itemsConfig; }
     public NamespacedKey getProtectionKey() { return protectionKey; }
     public HeadStorage getHeadStorage() { return headStorage; }
     public KeyItem getKeyItem() { return keyItem; }

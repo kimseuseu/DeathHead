@@ -13,8 +13,6 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.List;
 
 public class HeadPreviewListener implements Listener {
@@ -51,7 +49,7 @@ public class HeadPreviewListener implements Listener {
 
         HeadData data = plugin.getHeadStorage().get(headId);
         if (data == null) {
-            event.getWhoClicked().sendMessage("§7이 머리는 이미 부패했습니다.");
+            event.getWhoClicked().sendMessage(plugin.getMessage("expired", "§7이 머리는 이미 부패했습니다."));
             event.setCancelled(true);
             return;
         }
@@ -76,34 +74,13 @@ public class HeadPreviewListener implements Listener {
         if (infoMeta != null) {
             infoMeta.setDisplayName("§e§l봉인 정보");
 
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-            String deathTime = sdf.format(new Date(data.getCreatedAt() * 1000L));
-            String expireTime = sdf.format(new Date(data.getExpiresAt() * 1000L));
-
-            // 정확한 남은 시간 계산
-            long remaining = data.getExpiresAt() - (System.currentTimeMillis() / 1000L);
-            String remainStr;
-            if (remaining <= 0) {
-                remainStr = "§c부패 완료";
-            } else if (remaining >= 3600) {
-                long hours = remaining / 3600;
-                long mins = (remaining % 3600) / 60;
-                remainStr = hours + "시간 " + mins + "분";
-            } else if (remaining >= 60) {
-                long mins = remaining / 60;
-                long secs = remaining % 60;
-                remainStr = mins + "분 " + secs + "초";
-            } else {
-                remainStr = "§c" + remaining + "초";
-            }
+            String remainStr = DeathListener.formatRemaining(data.getExpiresAt());
 
             infoMeta.setLore(List.of(
                     "",
                     "§7사망자: §f" + data.getOwnerName(),
                     "§7사망 위치: §f" + data.getDeathWorld() + " §7[§f" + data.getDeathX() + "§7, §f" + data.getDeathY() + "§7, §f" + data.getDeathZ() + "§7]",
-                    "§7사망 시각: §f" + deathTime,
                     "",
-                    "§7부패 시각: §f" + expireTime,
                     "§7남은 시간: §f" + remainStr,
                     "",
                     "§c⚠ 부패 시 아이템이 영구 유실됩니다!",

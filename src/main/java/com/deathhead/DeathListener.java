@@ -1,6 +1,10 @@
 package com.deathhead;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.*;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Firework;
@@ -26,24 +30,72 @@ import org.bukkit.util.Transformation;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
-import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class DeathListener implements Listener {
 
     private static final long LABEL_UPDATE_INTERVAL = 20L;
-    private static final int MAX_LORE_ITEMS = 6;
+    private static final LegacyComponentSerializer LEGACY = LegacyComponentSerializer.legacySection();
+    private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
+    private static final Particle.DustOptions RED_DUST = new Particle.DustOptions(Color.fromRGB(180, 0, 0), 1.5f);
 
     private final DeathHeadPlugin plugin;
     private final NamespacedKey headIdKey;
+    private final NamespacedKey expiresAtKey;
     private final Map<UUID, Long> deathCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, GameMode> animatingPlayers = new ConcurrentHashMap<>();
 
     public DeathListener(DeathHeadPlugin plugin) {
         this.plugin = plugin;
         this.headIdKey = new NamespacedKey(plugin, "head_id");
+        this.expiresAtKey = new NamespacedKey(plugin, "expires_at");
     }
+
+    // ─── 실시간 lore 갱신 ───
+
+    public void startLoreUpdater() {
+        Bukkit.getScheduler().runTaskTimer(plugin, this::updateAllHeadLores, 20L, 20L);
+    }
+
+    private void updateAllHeadLores() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            updatePlayerHeadLores(player);
+        }
+    }
+
+    private void updatePlayerHeadLores(Player player) {
+        PlayerInventory inv = player.getInventory();
+        for (int i = 0; i < inv.getSize(); i++) {
+            ItemStack item = inv.getItem(i);
+            if (item == null || item.getType() != Material.PLAYER_HEAD) continue;
+
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) continue;
+
+            Long expiresAt = meta.getPersistentDataContainer().get(expiresAtKey, PersistentDataType.LONG);
+            if (expiresAt == null) continue;
+
+            List<Component> lore = meta.lore();
+            if (lore == null || lore.isEmpty()) continue;
+
+            Component newTimeLine = buildTimeLoreComponent(expiresAt);
+            String newPlain = PLAIN.serialize(newTimeLine);
+
+            for (int j = 0; j < lore.size(); j++) {
+                String plain = PLAIN.serialize(lore.get(j));
+                if (plain.contains("⏳") || plain.contains("부패 완료")) {
+                    if (plain.equals(newPlain)) break;
+                    lore.set(j, newTimeLine);
+                    meta.lore(lore);
+                    item.setItemMeta(meta);
+                    break;
+                }
+            }
+        }
+    }
+
+    // ─── 이벤트 핸들러 ───
 
     @EventHandler
     public void onItemPickup(EntityPickupItemEvent event) {
@@ -51,9 +103,7 @@ public class DeathListener implements Listener {
         if (!item.getScoreboardTags().contains("deathhead")) return;
 
         for (org.bukkit.entity.Entity passenger : item.getPassengers()) {
-            if (passenger instanceof TextDisplay) {
-                passenger.remove();
-            }
+            if (passenger instanceof TextDisplay) passenger.remove();
         }
     }
 
@@ -75,13 +125,14 @@ public class DeathListener implements Listener {
         long now = System.currentTimeMillis();
         Long lastDeath = deathCooldowns.get(player.getUniqueId());
         if (lastDeath != null && (now - lastDeath) < cooldownSeconds * 1000L) {
-            sendConfigMessage(player, "messages.cooldown", "§7사망 직후에는 머리가 터지지 않습니다.");
+            player.sendMessage(plugin.getMessage("cooldown", "§7사망 직후에는 머리가 터지지 않습니다."));
             return;
         }
         deathCooldowns.put(player.getUniqueId(), now);
 
         if (hasAndConsumeProtectionTicket(player)) {
-            player.sendMessage("§b§l[!] §f사망 패널티 방지권§7이 사용되어 아이템이 유실되지 않습니다.");
+            player.sendMessage(plugin.getMessage("protection-used",
+                    "§b§l[!] §f사망 패널티 방지권§7이 사용되어 아이템이 유실되지 않습니다."));
             runDeathAnimation(player, deathLoc, originalMode, null, null, 0);
             return;
         }
@@ -100,10 +151,32 @@ public class DeathListener implements Listener {
         plugin.getHeadStorage().save(data);
 
         if (!sealedItems.isEmpty()) {
-            sendConfigMessage(player, "messages.death", "§c아이템 일부가 유실되었습니다. 머리를 찾아 회수하세요.");
+            player.sendMessage(plugin.getMessage("death",
+                    "§c아이템 일부가 유실되었습니다. 머리를 찾아 회수하세요."));
+            sendSealedItemsChat(player, sealedItems);
         }
 
         runDeathAnimation(player, deathLoc, originalMode, headId, sealedItems, expiresAt);
+    }
+
+    private void sendSealedItemsChat(Player player, List<ItemStack> sealedItems) {
+        player.sendMessage(LEGACY.deserialize("§8§m                                    "));
+        player.sendMessage(LEGACY.deserialize("  §c§l⚠ §f봉인된 아이템 §7(§f" + sealedItems.size() + "개§7)"));
+
+        for (ItemStack sealed : sealedItems) {
+            Component itemName = getItemComponent(sealed);
+            int amt = sealed.getAmount();
+
+            Component line = Component.text("  ", NamedTextColor.DARK_GRAY)
+                    .append(Component.text("▸ ", NamedTextColor.DARK_GRAY))
+                    .append(itemName);
+            if (amt > 1) {
+                line = line.append(Component.text(" x" + amt, NamedTextColor.GRAY));
+            }
+            player.sendMessage(line);
+        }
+
+        player.sendMessage(LEGACY.deserialize("§8§m                                    "));
     }
 
     // ─── 사망 연출 ───
@@ -168,9 +241,7 @@ public class DeathListener implements Listener {
 
         p.setGameMode(originalMode);
         Location spawnLoc = p.getBedSpawnLocation();
-        if (spawnLoc == null) {
-            spawnLoc = p.getWorld().getSpawnLocation();
-        }
+        if (spawnLoc == null) spawnLoc = p.getWorld().getSpawnLocation();
         p.teleport(spawnLoc);
     }
 
@@ -182,7 +253,7 @@ public class DeathListener implements Listener {
 
         for (int i = 0; i < inv.getSize(); i++) {
             ItemStack item = inv.getItem(i);
-            if (item == null || item.getType() != Material.PAPER) continue;
+            if (item == null) continue;
             ItemMeta meta = item.getItemMeta();
             if (meta == null) continue;
 
@@ -203,8 +274,9 @@ public class DeathListener implements Listener {
         ItemMeta meta = item.getItemMeta();
 
         if (plugin.getKeyItem().isKey(item)) return true;
-        return item.getType() == Material.PAPER
-                && meta.getPersistentDataContainer().has(plugin.getProtectionKey(), PersistentDataType.BYTE);
+        if (meta.getPersistentDataContainer().has(plugin.getProtectionKey(), PersistentDataType.BYTE)) return true;
+        if (meta.getPersistentDataContainer().has(headIdKey, PersistentDataType.STRING)) return true;
+        return false;
     }
 
     private List<ItemStack> sealItems(Player player) {
@@ -248,9 +320,12 @@ public class DeathListener implements Listener {
         if (meta == null) return;
 
         meta.setPlayerProfile(player.getPlayerProfile());
-        meta.setDisplayName("§c" + player.getName() + "§7의 머리");
-        meta.setLore(buildSkullLore(sealedItems, expiresAt));
+        meta.displayName(Component.text(player.getName(), NamedTextColor.RED)
+                .append(Component.text("의 머리", NamedTextColor.GRAY))
+                .decoration(TextDecoration.ITALIC, false));
+        meta.lore(buildSkullLore(sealedItems, expiresAt));
         meta.getPersistentDataContainer().set(headIdKey, PersistentDataType.STRING, headId);
+        meta.getPersistentDataContainer().set(expiresAtKey, PersistentDataType.LONG, expiresAt);
         meta.setMaxStackSize(1);
         skull.setItemMeta(meta);
 
@@ -265,41 +340,67 @@ public class DeathListener implements Listener {
         spawnHeadLabel(droppedItem, player.getName(), expiresAt);
     }
 
-    private List<String> buildSkullLore(List<ItemStack> sealedItems, long expiresAt) {
-        String expireStr = new SimpleDateFormat("HH:mm").format(new Date(expiresAt * 1000L));
+    public List<Component> buildSkullLore(List<ItemStack> sealedItems, long expiresAt) {
+        int maxDisplay = plugin.getItemsConfig().getInt("sealed-head.max-display-items", 6);
 
-        List<String> lore = new ArrayList<>();
-        lore.add("");
-        lore.add("§8§m                                    ");
-        lore.add("");
-        lore.add("  §c§l⚠ §f봉인된 아이템 §7(§f" + sealedItems.size() + "개§7)");
-        lore.add("");
+        List<Component> lore = new ArrayList<>();
+        lore.add(Component.empty());
+        lore.add(LEGACY.deserialize("§8§m                                    "));
+        lore.add(Component.empty());
+        lore.add(LEGACY.deserialize("  §c§l⚠ §f봉인된 아이템 §7(§f" + sealedItems.size() + "개§7)"));
+        lore.add(Component.empty());
 
-        int displayCount = Math.min(sealedItems.size(), MAX_LORE_ITEMS);
+        int displayCount = Math.min(sealedItems.size(), maxDisplay);
         for (int i = 0; i < displayCount; i++) {
             ItemStack sealed = sealedItems.get(i);
-            String name = getItemDisplayName(sealed);
             int amt = sealed.getAmount();
-            lore.add("  §8▸ §f" + name + (amt > 1 ? " §7x" + amt : ""));
+
+            Component line = Component.text("  ", NamedTextColor.DARK_GRAY)
+                    .append(Component.text("▸ ", NamedTextColor.DARK_GRAY))
+                    .append(getItemComponent(sealed))
+                    .decoration(TextDecoration.ITALIC, false);
+            if (amt > 1) {
+                line = line.append(Component.text(" x" + amt, NamedTextColor.GRAY));
+            }
+            lore.add(line);
         }
-        if (sealedItems.size() > MAX_LORE_ITEMS) {
-            lore.add("  §8  ... §7외 §f" + (sealedItems.size() - MAX_LORE_ITEMS) + "§7개");
+        if (sealedItems.size() > maxDisplay) {
+            lore.add(LEGACY.deserialize("  §8  ... §7외 §f" + (sealedItems.size() - maxDisplay) + "§7개"));
         }
 
-        lore.add("");
-        lore.add("§8§m                                    ");
-        lore.add("");
-        lore.add("  §c⏳ §7부패 시각: §f" + expireStr + " §8| §c부패 시 아이템 영구 유실");
-        lore.add("");
-        lore.add("  §e§l⬦ §e봉인 해제 방법");
-        lore.add("  §71. §f머리를 바닥에 설치");
-        lore.add("  §72. §6머리 열쇠§7를 들고 §f우클릭");
-        lore.add("");
-        lore.add("§8§m                                    ");
-        lore.add("");
-        lore.add("  §b§l🔍 §b[인벤토리 Shift+우클릭] §7봉인 아이템 미리보기");
-        lore.add("");
+        lore.add(Component.empty());
+        lore.add(LEGACY.deserialize("§8§m                                    "));
+        lore.add(Component.empty());
+        lore.add(buildTimeLoreComponent(expiresAt));
+        lore.add(Component.text("  부패 시 아이템 영구 유실", NamedTextColor.DARK_GRAY)
+                .decoration(TextDecoration.ITALIC, false));
+        lore.add(Component.empty());
+        lore.add(LEGACY.deserialize("  §e§l⬦ §e봉인 해제 방법"));
+        lore.add(LEGACY.deserialize("  §71. §f머리를 바닥에 설치"));
+        lore.add(LEGACY.deserialize("  §72. §6머리 열쇠§7를 들고 §f우클릭"));
+        lore.add(Component.empty());
+        lore.add(LEGACY.deserialize("§8§m                                    "));
+        lore.add(Component.empty());
+        lore.add(LEGACY.deserialize("  §b§l\uD83D\uDD0D §b[인벤토리 Shift+우클릭] §7봉인 아이템 미리보기"));
+        lore.add(Component.empty());
         return lore;
+    }
+
+    private Component buildTimeLoreComponent(long expiresAt) {
+        return Component.text("  ⏳ ", NamedTextColor.RED)
+                .append(Component.text("남은 시간: ", NamedTextColor.GRAY))
+                .append(Component.text(formatRemaining(expiresAt), NamedTextColor.WHITE))
+                .decoration(TextDecoration.ITALIC, false);
+    }
+
+    // ─── 아이템 이름 Component ───
+
+    private Component getItemComponent(ItemStack item) {
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null && meta.hasDisplayName()) {
+            return meta.displayName();
+        }
+        return Component.translatable(item.translationKey(), NamedTextColor.WHITE);
     }
 
     // ─── TextDisplay ───
@@ -314,7 +415,7 @@ public class DeathListener implements Listener {
             td.setBrightness(new Display.Brightness(15, 15));
             td.text(buildLabelText(playerName, expiresAt));
             td.setTransformation(new Transformation(
-                    new Vector3f(0f, 1.2f, 0f),
+                    new Vector3f(0f, 1.5f, 0f),
                     new AxisAngle4f(0, 0, 0, 1),
                     new Vector3f(1, 1, 1),
                     new AxisAngle4f(0, 0, 0, 1)
@@ -344,7 +445,7 @@ public class DeathListener implements Listener {
         long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
         String timeStr = remaining <= 0
                 ? "§4§l부패 완료"
-                : "§c⏳ " + String.format("%02d:%02d", remaining / 60, remaining % 60);
+                : "§c⏳ " + formatRemaining(expiresAt);
         return Component.text("§c" + playerName + "§7의 머리\n" + timeStr);
     }
 
@@ -377,8 +478,7 @@ public class DeathListener implements Listener {
         World world = location.getWorld();
         Location particleLoc = location.clone().add(0, 0.5, 0);
 
-        Particle.DustOptions redDust = new Particle.DustOptions(Color.fromRGB(180, 0, 0), 1.5f);
-        world.spawnParticle(Particle.DUST, particleLoc, 30, 0.5, 0.5, 0.5, 0, redDust);
+        world.spawnParticle(Particle.DUST, particleLoc, 30, 0.5, 0.5, 0.5, 0, RED_DUST);
 
         new BukkitRunnable() {
             int tick = 0;
@@ -387,7 +487,7 @@ public class DeathListener implements Listener {
                 if (tick >= 5) { cancel(); return; }
                 Location rising = particleLoc.clone().add(0, tick * 0.6, 0);
                 world.spawnParticle(Particle.SOUL, rising, 8, 0.3, 0.2, 0.3, 0.02);
-                world.spawnParticle(Particle.DUST, rising, 5, 0.4, 0.3, 0.4, 0, redDust);
+                world.spawnParticle(Particle.DUST, rising, 5, 0.4, 0.3, 0.4, 0, RED_DUST);
                 tick++;
             }
         }.runTaskTimer(plugin, 0L, 6L);
@@ -395,30 +495,23 @@ public class DeathListener implements Listener {
 
     // ─── 유틸 ───
 
-    private String getItemDisplayName(ItemStack item) {
-        ItemMeta meta = item.getItemMeta();
-        if (meta != null && meta.hasDisplayName()) return meta.getDisplayName();
-        return formatMaterialName(item.getType());
-    }
+    public static String formatRemaining(long expiresAt) {
+        long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
+        if (remaining <= 0) return "부패 완료";
 
-    private String formatMaterialName(Material material) {
-        String[] parts = material.name().toLowerCase().split("_");
-        StringBuilder sb = new StringBuilder();
-        for (String part : parts) {
-            if (!sb.isEmpty()) sb.append(" ");
-            sb.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
-        }
-        return sb.toString();
-    }
+        long hours = remaining / 3600;
+        long minutes = (remaining % 3600) / 60;
+        long seconds = remaining % 60;
 
-    private void sendConfigMessage(Player player, String configKey, String defaultMsg) {
-        String msg = plugin.getConfig().getString(configKey, defaultMsg);
-        player.sendMessage(msg.replace('&', '§'));
+        if (hours > 0) return hours + "시간 " + minutes + "분 " + seconds + "초";
+        if (minutes > 0) return minutes + "분 " + seconds + "초";
+        return seconds + "초";
     }
 
     // ─── public API ───
 
     public NamespacedKey getHeadIdKey() { return headIdKey; }
+    public NamespacedKey getExpiresAtKey() { return expiresAtKey; }
 
     public GameMode removeAnimatingPlayer(UUID uuid) {
         return animatingPlayers.remove(uuid);

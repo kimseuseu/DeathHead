@@ -128,7 +128,15 @@ public class HeadStorage {
         String headId = yml.getString("headId");
         if (headId == null) return null;
 
-        UUID ownerUuid = UUID.fromString(yml.getString("owner", ""));
+        String ownerStr = yml.getString("owner", "");
+        if (ownerStr.isEmpty()) return null;
+        UUID ownerUuid;
+        try {
+            ownerUuid = UUID.fromString(ownerStr);
+        } catch (IllegalArgumentException e) {
+            plugin.getLogger().warning("Invalid UUID in " + file.getName());
+            return null;
+        }
         String ownerName = yml.getString("ownerName", "Unknown");
         String deathWorld = yml.getString("deathWorld", "world");
         int deathX = yml.getInt("deathX");

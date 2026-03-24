@@ -14,19 +14,6 @@ head:
   death-cooldown: 10           # 연속 사망 쿨다운 (초)
   cleanup-interval: 60         # 부패 스캔 주기 (초)
 
-# 열쇠 아이템
-key:
-  material: TRIPWIRE_HOOK
-  custom-model-data: 0         # 0이면 사용 안 함
-  name: "&6머리 열쇠"
-
 # 엔티티 보호
 entity-protection:
   scoreboard-tag: "deathhead"
-
-# 메시지
-messages:
-  death: "&c아이템 일부가 유실되었습니다. 머리를 찾아 회수하세요."
-  retrieve: "&a유실된 아이템을 되찾았습니다!"
-  expired: "&7이 머리는 이미 부패했습니다."
-  cooldown: "&7사망 직후에는 머리가 터지지 않습니다."
