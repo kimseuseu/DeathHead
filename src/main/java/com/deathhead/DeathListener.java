@@ -1,12 +1,16 @@
 package com.deathhead;
 
+import net.kyori.adventure.text.Component;
 import org.bukkit.*;
+import org.bukkit.entity.Display;
 import org.bukkit.entity.Firework;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
@@ -18,28 +22,46 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.util.Transformation;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
+import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class DeathListener implements Listener {
 
+    private static final long LABEL_UPDATE_INTERVAL = 20L;
+    private static final int MAX_LORE_ITEMS = 6;
+
     private final DeathHeadPlugin plugin;
     private final NamespacedKey headIdKey;
-    private final Map<UUID, Long> deathCooldowns = new HashMap<>();
-    private final Map<UUID, GameMode> animatingPlayers = new HashMap<>();
+    private final Map<UUID, Long> deathCooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, GameMode> animatingPlayers = new ConcurrentHashMap<>();
 
     public DeathListener(DeathHeadPlugin plugin) {
         this.plugin = plugin;
         this.headIdKey = new NamespacedKey(plugin, "head_id");
     }
 
-    // DeathHead 폭죽 데미지 차단
+    @EventHandler
+    public void onItemPickup(EntityPickupItemEvent event) {
+        Item item = event.getItem();
+        if (!item.getScoreboardTags().contains("deathhead")) return;
+
+        for (org.bukkit.entity.Entity passenger : item.getPassengers()) {
+            if (passenger instanceof TextDisplay) {
+                passenger.remove();
+            }
+        }
+    }
+
     @EventHandler
     public void onFireworkDamage(EntityDamageByEntityEvent event) {
-        if (event.getDamager() instanceof Firework firework) {
-            if (firework.getScoreboardTags().contains("deathhead_no_damage")) {
-                event.setCancelled(true);
-            }
+        if (event.getDamager() instanceof Firework firework
+                && firework.getScoreboardTags().contains("deathhead_no_damage")) {
+            event.setCancelled(true);
         }
     }
 
@@ -49,31 +71,24 @@ public class DeathListener implements Listener {
         Location deathLoc = player.getLocation().clone();
         GameMode originalMode = player.getGameMode();
 
-        // ── 사망 쿨다운 체크 ──
         int cooldownSeconds = plugin.getConfig().getInt("head.death-cooldown", 10);
         long now = System.currentTimeMillis();
         Long lastDeath = deathCooldowns.get(player.getUniqueId());
         if (lastDeath != null && (now - lastDeath) < cooldownSeconds * 1000L) {
-            // 쿨다운 중: 머리 생성 없이 일반 사망 처리
-            String msg = plugin.getConfig().getString("messages.cooldown", "§7사망 직후에는 머리가 생성되지 않습니다.");
-            player.sendMessage(msg.replace('&', '§'));
+            sendConfigMessage(player, "messages.cooldown", "§7사망 직후에는 머리가 터지지 않습니다.");
             return;
         }
         deathCooldowns.put(player.getUniqueId(), now);
 
-        // ── 사망 방지권 체크 ──
         if (hasAndConsumeProtectionTicket(player)) {
             player.sendMessage("§b§l[!] §f사망 패널티 방지권§7이 사용되어 아이템이 유실되지 않습니다.");
-            // 연출만 실행 (봉인 없음)
             runDeathAnimation(player, deathLoc, originalMode, null, null, 0);
             return;
         }
 
-        // ── 아이템 봉인 ──
         List<ItemStack> sealedItems = sealItems(player);
         String headId = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
 
-        // ── HeadData 저장 ──
         long createdAt = now / 1000L;
         int ttlMinutes = plugin.getConfig().getInt("head.ttl-minutes", 60);
         long expiresAt = createdAt + (ttlMinutes * 60L);
@@ -84,91 +99,83 @@ public class DeathListener implements Listener {
                 createdAt, expiresAt, sealedItems);
         plugin.getHeadStorage().save(data);
 
-        // ── 사망 메시지 ──
         if (!sealedItems.isEmpty()) {
-            String msg = plugin.getConfig().getString("messages.death",
-                    "§c아이템 일부가 유실되었습니다. 머리를 찾아 회수하세요.");
-            player.sendMessage(msg.replace('&', '§'));
+            sendConfigMessage(player, "messages.death", "§c아이템 일부가 유실되었습니다. 머리를 찾아 회수하세요.");
         }
 
-        // ── 연출 + 머리 드롭 ──
         runDeathAnimation(player, deathLoc, originalMode, headId, sealedItems, expiresAt);
     }
+
+    // ─── 사망 연출 ───
 
     private void runDeathAnimation(Player player, Location deathLoc, GameMode originalMode,
                                     String headId, List<ItemStack> sealedItems, long expiresAt) {
         UUID playerId = player.getUniqueId();
-
-        // 5틱(250ms) 대기 — 클라이언트 미니맵 모드가 사망 위치를 기록할 시간 확보
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                Player p = Bukkit.getPlayer(playerId);
-                if (p == null || !p.isOnline()) return;
-                p.spigot().respawn();
-
-                new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        Player p2 = Bukkit.getPlayer(playerId);
-                        if (p2 == null || !p2.isOnline()) return;
-
-                        animatingPlayers.put(playerId, originalMode);
-                        p2.setGameMode(GameMode.SPECTATOR);
-
-                        Location aerialLoc = deathLoc.clone().add(0, 5, 0);
-                        aerialLoc.setYaw(p2.getLocation().getYaw());
-                        aerialLoc.setPitch(90f);
-                        p2.teleport(aerialLoc);
-
-                        p2.addPotionEffect(new PotionEffect(
-                                PotionEffectType.BLINDNESS, 25, 0, false, false, false));
-
-                        p2.sendTitle(
-                                "§c§l☠ YOU DIED",
-                                "§7" + p2.getName(),
-                                5, 40, 15
-                        );
-
-                        // 카메라 안정화 후 폭죽 + 파티클 + 머리 드롭 (10틱 후)
-                        new BukkitRunnable() {
-                            @Override
-                            public void run() {
-                                // 폭죽+파티클은 플레이어 무관 (위치 기반)
-                                spawnDeathFirework(deathLoc);
-                                spawnDeathParticles(deathLoc);
-                                // 머리 드롭도 월드에 드롭이므로 오프라인이어도 OK
-                                if (headId != null && sealedItems != null) {
-                                    Player p3 = Bukkit.getPlayer(playerId);
-                                    if (p3 != null && p3.isOnline()) {
-                                        dropPlayerHead(p3, deathLoc, headId, sealedItems, expiresAt);
-                                    }
-                                }
-                            }
-                        }.runTaskLater(plugin, 10L);
-
-                        // 3초(60틱) 후 원래 모드로 복귀 + 스폰 위치로 리스폰
-                        new BukkitRunnable() {
-                            @Override
-                            public void run() {
-                                animatingPlayers.remove(playerId);
-                                Player p4 = Bukkit.getPlayer(playerId);
-                                if (p4 == null || !p4.isOnline()) return;
-                                p4.setGameMode(originalMode);
-                                Location spawnLoc = p4.getBedSpawnLocation();
-                                if (spawnLoc == null) {
-                                    spawnLoc = p4.getWorld().getSpawnLocation();
-                                }
-                                p4.teleport(spawnLoc);
-                            }
-                        }.runTaskLater(plugin, 60L);
-                    }
-                }.runTaskLater(plugin, 1L);
-            }
-        }.runTaskLater(plugin, 5L);
+        Bukkit.getScheduler().runTaskLater(plugin, () ->
+                doRespawn(playerId, deathLoc, originalMode, headId, sealedItems, expiresAt), 5L);
     }
 
-    /** 사망 방지권 소지 여부 확인 + 1개 소모 */
+    private void doRespawn(UUID playerId, Location deathLoc, GameMode originalMode,
+                            String headId, List<ItemStack> sealedItems, long expiresAt) {
+        Player p = Bukkit.getPlayer(playerId);
+        if (p == null || !p.isOnline()) return;
+        p.spigot().respawn();
+
+        Bukkit.getScheduler().runTaskLater(plugin, () ->
+                doSpectator(playerId, deathLoc, originalMode, headId, sealedItems, expiresAt), 1L);
+    }
+
+    private void doSpectator(UUID playerId, Location deathLoc, GameMode originalMode,
+                              String headId, List<ItemStack> sealedItems, long expiresAt) {
+        Player p = Bukkit.getPlayer(playerId);
+        if (p == null || !p.isOnline()) return;
+
+        animatingPlayers.put(playerId, originalMode);
+        p.setGameMode(GameMode.SPECTATOR);
+
+        Location aerialLoc = deathLoc.clone().add(0, 5, 0);
+        aerialLoc.setYaw(p.getLocation().getYaw());
+        aerialLoc.setPitch(90f);
+        p.teleport(aerialLoc);
+
+        p.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, 25, 0, false, false, false));
+        p.sendTitle("§c§l☠ YOU DIED", "§7" + p.getName(), 5, 40, 15);
+
+        Bukkit.getScheduler().runTaskLater(plugin, () ->
+                doEffects(playerId, deathLoc, headId, sealedItems, expiresAt), 10L);
+
+        Bukkit.getScheduler().runTaskLater(plugin, () ->
+                doRestore(playerId, originalMode), 60L);
+    }
+
+    private void doEffects(UUID playerId, Location deathLoc,
+                            String headId, List<ItemStack> sealedItems, long expiresAt) {
+        spawnFirework(deathLoc);
+        spawnParticles(deathLoc);
+
+        if (headId != null && sealedItems != null) {
+            Player p = Bukkit.getPlayer(playerId);
+            if (p != null && p.isOnline()) {
+                dropPlayerHead(p, deathLoc, headId, sealedItems, expiresAt);
+            }
+        }
+    }
+
+    private void doRestore(UUID playerId, GameMode originalMode) {
+        animatingPlayers.remove(playerId);
+        Player p = Bukkit.getPlayer(playerId);
+        if (p == null || !p.isOnline()) return;
+
+        p.setGameMode(originalMode);
+        Location spawnLoc = p.getBedSpawnLocation();
+        if (spawnLoc == null) {
+            spawnLoc = p.getWorld().getSpawnLocation();
+        }
+        p.teleport(spawnLoc);
+    }
+
+    // ─── 아이템 봉인 ───
+
     private boolean hasAndConsumeProtectionTicket(Player player) {
         NamespacedKey protectionKey = plugin.getProtectionKey();
         PlayerInventory inv = player.getInventory();
@@ -191,21 +198,15 @@ public class DeathListener implements Listener {
         return false;
     }
 
-    /** 아이템이 보호 대상(방지권/열쇠)인지 확인 */
     private boolean isProtectedItem(ItemStack item) {
         if (item == null || !item.hasItemMeta()) return false;
         ItemMeta meta = item.getItemMeta();
-        // 열쇠
+
         if (plugin.getKeyItem().isKey(item)) return true;
-        // 방지권
-        if (item.getType() == Material.PAPER &&
-                meta.getPersistentDataContainer().has(plugin.getProtectionKey(), PersistentDataType.BYTE)) {
-            return true;
-        }
-        return false;
+        return item.getType() == Material.PAPER
+                && meta.getPersistentDataContainer().has(plugin.getProtectionKey(), PersistentDataType.BYTE);
     }
 
-    /** 인벤토리에서 10~15% 무작위 아이템 제거 후 반환 (방지권/열쇠 제외) */
     private List<ItemStack> sealItems(Player player) {
         PlayerInventory inv = player.getInventory();
         List<Integer> filledSlots = new ArrayList<>();
@@ -235,74 +236,121 @@ public class DeathListener implements Listener {
                 inv.setItem(slot, null);
             }
         }
-
         return sealed;
     }
 
-    private void dropPlayerHead(Player player, Location location, String headId, List<ItemStack> sealedItems, long expiresAt) {
+    // ─── 머리 드롭 ───
+
+    private void dropPlayerHead(Player player, Location location, String headId,
+                                 List<ItemStack> sealedItems, long expiresAt) {
         ItemStack skull = new ItemStack(Material.PLAYER_HEAD, 1);
         SkullMeta meta = (SkullMeta) skull.getItemMeta();
-        if (meta != null) {
-            meta.setPlayerProfile(player.getPlayerProfile());
-            meta.setDisplayName("§c" + player.getName() + "§7의 머리");
+        if (meta == null) return;
 
-            // lore 디자인
-            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("HH:mm");
-            String expireStr = sdf.format(new java.util.Date(expiresAt * 1000L));
-
-            List<String> lore = new ArrayList<>();
-            lore.add("");
-            lore.add("§8§m                                    ");
-            lore.add("");
-            lore.add("  §c§l⚠ §f봉인된 아이템 §7(§f" + sealedItems.size() + "개§7)");
-            lore.add("");
-            for (int i = 0; i < Math.min(sealedItems.size(), 6); i++) {
-                ItemStack sealed = sealedItems.get(i);
-                String name = sealed.getItemMeta() != null && sealed.getItemMeta().hasDisplayName()
-                        ? sealed.getItemMeta().getDisplayName()
-                        : formatMaterialName(sealed.getType());
-                int amt = sealed.getAmount();
-                lore.add("  §8▸ §f" + name + (amt > 1 ? " §7x" + amt : ""));
-            }
-            if (sealedItems.size() > 6) {
-                lore.add("  §8  ... §7외 §f" + (sealedItems.size() - 6) + "§7개");
-            }
-            lore.add("");
-            lore.add("§8§m                                    ");
-            lore.add("");
-            lore.add("  §c⏳ §7부패 시각: §f" + expireStr + " §8| §c썩으면 아이템 영구 유실");
-            lore.add("");
-            lore.add("  §e§l⬦ §e봉인 해제 방법");
-            lore.add("  §71. §f머리를 바닥에 설치");
-            lore.add("  §72. §6머리 열쇠§7를 들고 §f우클릭");
-            lore.add("");
-            lore.add("§8§m                                    ");
-            lore.add("");
-            lore.add("  §b§l🔍 §b[인벤토리 Shift+우클릭] §7봉인 아이템 미리보기");
-            lore.add("");
-            meta.setLore(lore);
-
-            // headId PDC 부착
-            meta.getPersistentDataContainer().set(headIdKey, PersistentDataType.STRING, headId);
-
-            // 같은 플레이어 머리라도 겹치지 않도록 스택 크기 1
-            meta.setMaxStackSize(1);
-            skull.setItemMeta(meta);
-        }
+        meta.setPlayerProfile(player.getPlayerProfile());
+        meta.setDisplayName("§c" + player.getName() + "§7의 머리");
+        meta.setLore(buildSkullLore(sealedItems, expiresAt));
+        meta.getPersistentDataContainer().set(headIdKey, PersistentDataType.STRING, headId);
+        meta.setMaxStackSize(1);
+        skull.setItemMeta(meta);
 
         Item droppedItem = location.getWorld().dropItemNaturally(location, skull);
-
-        // 엔티티 보호
         droppedItem.setMetadata("deathhead", new FixedMetadataValue(plugin, true));
         droppedItem.addScoreboardTag("deathhead");
         droppedItem.setCustomNameVisible(false);
-        droppedItem.customName(net.kyori.adventure.text.Component.text("DeathHead"));
-
-        // 아이템 소멸 방지 (무제한)
+        droppedItem.customName(Component.text("DeathHead"));
         droppedItem.setUnlimitedLifetime(true);
+        droppedItem.setGlowing(true);
+
+        spawnHeadLabel(droppedItem, player.getName(), expiresAt);
     }
 
-    private void spawnDeathFirework(Location location) {
+    private List<String> buildSkullLore(List<ItemStack> sealedItems, long expiresAt) {
+        String expireStr = new SimpleDateFormat("HH:mm").format(new Date(expiresAt * 1000L));
+
+        List<String> lore = new ArrayList<>();
+        lore.add("");
+        lore.add("§8§m                                    ");
+        lore.add("");
+        lore.add("  §c§l⚠ §f봉인된 아이템 §7(§f" + sealedItems.size() + "개§7)");
+        lore.add("");
+
+        int displayCount = Math.min(sealedItems.size(), MAX_LORE_ITEMS);
+        for (int i = 0; i < displayCount; i++) {
+            ItemStack sealed = sealedItems.get(i);
+            String name = getItemDisplayName(sealed);
+            int amt = sealed.getAmount();
+            lore.add("  §8▸ §f" + name + (amt > 1 ? " §7x" + amt : ""));
+        }
+        if (sealedItems.size() > MAX_LORE_ITEMS) {
+            lore.add("  §8  ... §7외 §f" + (sealedItems.size() - MAX_LORE_ITEMS) + "§7개");
+        }
+
+        lore.add("");
+        lore.add("§8§m                                    ");
+        lore.add("");
+        lore.add("  §c⏳ §7부패 시각: §f" + expireStr + " §8| §c부패 시 아이템 영구 유실");
+        lore.add("");
+        lore.add("  §e§l⬦ §e봉인 해제 방법");
+        lore.add("  §71. §f머리를 바닥에 설치");
+        lore.add("  §72. §6머리 열쇠§7를 들고 §f우클릭");
+        lore.add("");
+        lore.add("§8§m                                    ");
+        lore.add("");
+        lore.add("  §b§l🔍 §b[인벤토리 Shift+우클릭] §7봉인 아이템 미리보기");
+        lore.add("");
+        return lore;
+    }
+
+    // ─── TextDisplay ───
+
+    private void spawnHeadLabel(Item droppedItem, String playerName, long expiresAt) {
+        TextDisplay display = droppedItem.getWorld().spawn(droppedItem.getLocation(), TextDisplay.class, td -> {
+            td.setBillboard(Display.Billboard.CENTER);
+            td.setAlignment(TextDisplay.TextAlignment.CENTER);
+            td.setSeeThrough(false);
+            td.setShadowed(true);
+            td.setBackgroundColor(Color.fromARGB(160, 0, 0, 0));
+            td.setBrightness(new Display.Brightness(15, 15));
+            td.text(buildLabelText(playerName, expiresAt));
+            td.setTransformation(new Transformation(
+                    new Vector3f(0f, 1.2f, 0f),
+                    new AxisAngle4f(0, 0, 0, 1),
+                    new Vector3f(1, 1, 1),
+                    new AxisAngle4f(0, 0, 0, 1)
+            ));
+        });
+
+        droppedItem.addPassenger(display);
+
+        final int[] taskId = new int[1];
+        taskId[0] = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
+            if (droppedItem.isDead() || !droppedItem.isValid()) {
+                if (!display.isDead()) display.remove();
+                Bukkit.getScheduler().cancelTask(taskId[0]);
+                return;
+            }
+            long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
+            if (remaining <= 0) {
+                display.text(Component.text("§c" + playerName + "§7의 머리\n§4§l부패 완료"));
+                Bukkit.getScheduler().cancelTask(taskId[0]);
+                return;
+            }
+            display.text(buildLabelText(playerName, expiresAt));
+        }, LABEL_UPDATE_INTERVAL, LABEL_UPDATE_INTERVAL);
+    }
+
+    private Component buildLabelText(String playerName, long expiresAt) {
+        long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
+        String timeStr = remaining <= 0
+                ? "§4§l부패 완료"
+                : "§c⏳ " + String.format("%02d:%02d", remaining / 60, remaining % 60);
+        return Component.text("§c" + playerName + "§7의 머리\n" + timeStr);
+    }
+
+    // ─── 이펙트 ───
+
+    private void spawnFirework(Location location) {
         FireworkEffect effect = FireworkEffect.builder()
                 .with(FireworkEffect.Type.BALL_LARGE)
                 .withColor(Color.RED, Color.WHITE)
@@ -320,32 +368,23 @@ public class DeathListener implements Listener {
         meta.setPower(0);
         firework.setFireworkMeta(meta);
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                if (!firework.isDead()) {
-                    firework.detonate();
-                }
-            }
-        }.runTaskLater(plugin, 1L);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!firework.isDead()) firework.detonate();
+        }, 1L);
     }
 
-    private void spawnDeathParticles(Location location) {
+    private void spawnParticles(Location location) {
         World world = location.getWorld();
         Location particleLoc = location.clone().add(0, 0.5, 0);
 
-        Particle.DustOptions redDust = new Particle.DustOptions(
-                org.bukkit.Color.fromRGB(180, 0, 0), 1.5f);
+        Particle.DustOptions redDust = new Particle.DustOptions(Color.fromRGB(180, 0, 0), 1.5f);
         world.spawnParticle(Particle.DUST, particleLoc, 30, 0.5, 0.5, 0.5, 0, redDust);
 
         new BukkitRunnable() {
             int tick = 0;
             @Override
             public void run() {
-                if (tick >= 5) {
-                    cancel();
-                    return;
-                }
+                if (tick >= 5) { cancel(); return; }
                 Location rising = particleLoc.clone().add(0, tick * 0.6, 0);
                 world.spawnParticle(Particle.SOUL, rising, 8, 0.3, 0.2, 0.3, 0.02);
                 world.spawnParticle(Particle.DUST, rising, 5, 0.4, 0.3, 0.4, 0, redDust);
@@ -354,7 +393,14 @@ public class DeathListener implements Listener {
         }.runTaskTimer(plugin, 0L, 6L);
     }
 
-    /** Material 이름을 읽기 좋게 변환 (DIAMOND_SWORD → Diamond Sword) */
+    // ─── 유틸 ───
+
+    private String getItemDisplayName(ItemStack item) {
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null && meta.hasDisplayName()) return meta.getDisplayName();
+        return formatMaterialName(item.getType());
+    }
+
     private String formatMaterialName(Material material) {
         String[] parts = material.name().toLowerCase().split("_");
         StringBuilder sb = new StringBuilder();
@@ -365,16 +411,19 @@ public class DeathListener implements Listener {
         return sb.toString();
     }
 
-    public NamespacedKey getHeadIdKey() {
-        return headIdKey;
+    private void sendConfigMessage(Player player, String configKey, String defaultMsg) {
+        String msg = plugin.getConfig().getString(configKey, defaultMsg);
+        player.sendMessage(msg.replace('&', '§'));
     }
 
-    /** 연출 중인 플레이어의 원래 GameMode 반환 (연출 중이 아니면 null) */
+    // ─── public API ───
+
+    public NamespacedKey getHeadIdKey() { return headIdKey; }
+
     public GameMode removeAnimatingPlayer(UUID uuid) {
         return animatingPlayers.remove(uuid);
     }
 
-    /** 퇴장 시 쿨다운 맵 정리 */
     public void cleanupPlayer(UUID uuid) {
         deathCooldowns.remove(uuid);
     }

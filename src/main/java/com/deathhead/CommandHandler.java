@@ -120,7 +120,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
     }
 
     private void sendHelp(CommandSender sender) {
-        sender.sendMessage("§e§l━━━ DeathHead v2.0 ━━━");
+        sender.sendMessage("§e§l━━━ DeathHead v2.1 ━━━");
         sender.sendMessage("§6/dh key [플레이어] [개수] §7- 열쇠 지급");
         sender.sendMessage("§6/dh ticket [플레이어] [개수] §7- 사망 방지권 지급");
         sender.sendMessage("§6/dh reload §7- 설정 리로드");

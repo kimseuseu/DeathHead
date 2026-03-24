@@ -28,5 +28,5 @@ entity-protection:
 messages:
   death: "&c아이템 일부가 유실되었습니다. 머리를 찾아 회수하세요."
   retrieve: "&a유실된 아이템을 되찾았습니다!"
-  expired: "&7이 머리는 이미 썩었습니다."
+  expired: "&7이 머리는 이미 부패했습니다."
   cooldown: "&7사망 직후에는 머리가 터지지 않습니다."

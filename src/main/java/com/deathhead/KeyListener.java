@@ -89,9 +89,9 @@ public class KeyListener implements Listener {
         HeadData data = plugin.getHeadStorage().get(headId);
 
         if (data == null) {
-            // 썩었거나 이미 회수됨
+            // 부패했거나 이미 회수됨
             String msg = plugin.getConfig().getString("messages.expired",
-                    "§7이 머리는 이미 썩었습니다.");
+                    "§7이 머리는 이미 부패했습니다.");
             player.sendMessage(msg.replace('&', '§'));
             return;
         }

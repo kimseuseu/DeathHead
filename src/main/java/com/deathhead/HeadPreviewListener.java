@@ -51,7 +51,7 @@ public class HeadPreviewListener implements Listener {
 
         HeadData data = plugin.getHeadStorage().get(headId);
         if (data == null) {
-            event.getWhoClicked().sendMessage("§7이 머리는 이미 썩었습니다.");
+            event.getWhoClicked().sendMessage("§7이 머리는 이미 부패했습니다.");
             event.setCancelled(true);
             return;
         }
@@ -84,7 +84,7 @@ public class HeadPreviewListener implements Listener {
             long remaining = data.getExpiresAt() - (System.currentTimeMillis() / 1000L);
             String remainStr;
             if (remaining <= 0) {
-                remainStr = "§c썩음";
+                remainStr = "§c부패 완료";
             } else if (remaining >= 3600) {
                 long hours = remaining / 3600;
                 long mins = (remaining % 3600) / 60;
@@ -106,7 +106,7 @@ public class HeadPreviewListener implements Listener {
                     "§7부패 시각: §f" + expireTime,
                     "§7남은 시간: §f" + remainStr,
                     "",
-                    "§c⚠ 썩으면 아이템이 영구 유실됩니다!",
+                    "§c⚠ 부패 시 아이템이 영구 유실됩니다!",
                     "",
                     "§7봉인 아이템: §f" + items.size() + "개"
             ));
