@@ -3,6 +3,7 @@ package com.deathhead;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
+import org.bukkit.entity.Item;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -36,22 +37,20 @@ public class KeyListener implements Listener {
         this.plugin = plugin;
     }
 
-    /** 플레이어가 봉인된 머리 블록 파괴 */
     @EventHandler
     public void onHeadBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         if (!isSealedHead(block)) return;
         event.setDropItems(false);
+        plugin.getDeathListener().removeBlockLabel(block.getLocation());
         dropPreservedHead(block);
     }
 
-    /** 엔티티 폭발 (크리퍼, TNT 등) */
     @EventHandler
     public void onEntityExplode(EntityExplodeEvent event) {
         handleExplodedBlocks(event.blockList());
     }
 
-    /** 블록 폭발 (침대, 리스폰 앵커 등) */
     @EventHandler
     public void onBlockExplode(BlockExplodeEvent event) {
         handleExplodedBlocks(event.blockList());
@@ -62,7 +61,8 @@ public class KeyListener implements Listener {
         while (it.hasNext()) {
             Block block = it.next();
             if (!isSealedHead(block)) continue;
-            it.remove(); // 기본 드롭 방지
+            it.remove();
+            plugin.getDeathListener().removeBlockLabel(block.getLocation());
             dropPreservedHead(block);
         }
     }
@@ -98,16 +98,26 @@ public class KeyListener implements Listener {
             meta.lore(plugin.getDeathListener().buildSkullLore(data.getItems(), data.getExpiresAt()));
             meta.getPersistentDataContainer().set(
                     plugin.getDeathListener().getExpiresAtKey(), PersistentDataType.LONG, data.getExpiresAt());
+            meta.getPersistentDataContainer().set(
+                    plugin.getDeathListener().getOwnerNameKey(), PersistentDataType.STRING, data.getOwnerName());
             meta.setMaxStackSize(1);
         }
 
         headItem.setItemMeta(meta);
 
         Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
-        block.getWorld().dropItemNaturally(dropLoc, headItem);
+        Item droppedItem = block.getWorld().dropItemNaturally(dropLoc, headItem);
+
+        if (data != null) {
+            droppedItem.addScoreboardTag("deathhead");
+            droppedItem.setCustomNameVisible(false);
+            droppedItem.customName(net.kyori.adventure.text.Component.text("DeathHead"));
+            droppedItem.setUnlimitedLifetime(true);
+            droppedItem.setGlowing(true);
+            droppedItem.setMetadata("deathhead", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        }
     }
 
-    /** 머리 아이템 설치 시 PDC를 블록 TileEntity에 복사 */
     @EventHandler
     public void onHeadPlace(BlockPlaceEvent event) {
         Block block = event.getBlockPlaced();
@@ -115,18 +125,21 @@ public class KeyListener implements Listener {
 
         ItemStack item = event.getItemInHand();
         if (item.getType() != Material.PLAYER_HEAD) return;
-
         if (!(item.getItemMeta() instanceof SkullMeta itemMeta)) return;
 
         String headId = itemMeta.getPersistentDataContainer().get(
                 plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
         if (headId == null) return;
 
-        // 블록의 TileEntity에 headId 복사
         if (block.getState() instanceof Skull skull) {
             skull.getPersistentDataContainer().set(
                     plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING, headId);
             skull.update();
+        }
+
+        HeadData data = plugin.getHeadStorage().get(headId);
+        if (data != null) {
+            plugin.getDeathListener().spawnBlockLabel(block.getLocation(), data.getOwnerName(), data.getExpiresAt());
         }
     }
 
@@ -137,16 +150,12 @@ public class KeyListener implements Listener {
         Player player = event.getPlayer();
         ItemStack hand = player.getInventory().getItemInMainHand();
 
-        // 손에 열쇠를 들고 있는지 확인
         if (!plugin.getKeyItem().isKey(hand)) return;
 
         Block block = event.getClickedBlock();
         if (block == null) return;
-
-        // 플레이어 머리 블록인지 확인
         if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) return;
 
-        // 사용 쿨다운 (300ms)
         long now = System.currentTimeMillis();
         Long lastUse = useCooldowns.get(player.getUniqueId());
         if (lastUse != null && (now - lastUse) < 300) return;
@@ -154,18 +163,13 @@ public class KeyListener implements Listener {
 
         event.setCancelled(true);
 
-        // 블록에서 headId 추출
         if (!(block.getState() instanceof Skull skull)) return;
 
         String headId = skull.getPersistentDataContainer().get(
                 plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
 
-        if (headId == null) {
-            // PDC가 없는 일반 머리
-            return;
-        }
+        if (headId == null) return;
 
-        // 캐시에서 데이터 조회
         HeadData data = plugin.getHeadStorage().get(headId);
 
         if (data == null) {
@@ -173,36 +177,29 @@ public class KeyListener implements Listener {
             return;
         }
 
-        // ── 회수 성공 ──
         Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
 
-        // 봉인 아이템 드롭
         for (ItemStack item : data.getItems()) {
             block.getWorld().dropItemNaturally(dropLoc, item);
         }
 
-        // 블록 파괴
+        plugin.getDeathListener().removeBlockLabel(block.getLocation());
         block.setType(Material.AIR);
 
-        // 열쇠 1개 소모
         if (hand.getAmount() > 1) {
             hand.setAmount(hand.getAmount() - 1);
         } else {
             player.getInventory().setItemInMainHand(null);
         }
 
-        // YAML 삭제
         plugin.getHeadStorage().remove(headId);
 
-        // 회수 메시지
         player.sendMessage(plugin.getMessage("retrieve", "§a유실된 아이템을 되찾았습니다!"));
 
-        // 회수 이펙트
         block.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, dropLoc, 15, 0.3, 0.3, 0.3, 0);
         player.playSound(dropLoc, org.bukkit.Sound.BLOCK_CHEST_OPEN, 1f, 1.2f);
     }
 
-    /** 퇴장 시 쿨다운 정리 */
     public void cleanupPlayer(UUID uuid) {
         useCooldowns.remove(uuid);
     }

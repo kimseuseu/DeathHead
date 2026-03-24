@@ -31,6 +31,9 @@ public class JoinListener implements Listener {
             player.teleport(spawnLoc);
         }
 
+        // 접속 시 자기 인벤토리 열림 상태
+        plugin.getDeathListener().markInventoryOpen(player.getUniqueId());
+
         if (player.isOp()) {
             sendOpWelcome(player);
         }

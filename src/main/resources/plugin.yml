@@ -1,9 +1,10 @@
 name: DeathHead
-version: 2.2.0
+version: 2.3.0
 main: com.deathhead.DeathHeadPlugin
 api-version: '1.21'
 description: "R.E.P.O. 사망 연출 + 아이템 봉인/열쇠 회수 시스템"
 author: moo_gi
+softdepend: [ProtocolLib]
 
 commands:
   dh:

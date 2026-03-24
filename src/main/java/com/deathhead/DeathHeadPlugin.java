@@ -160,6 +160,7 @@ public class DeathHeadPlugin extends JavaPlugin {
     }
 
     public FileConfiguration getItemsConfig() { return itemsConfig; }
+    public FileConfiguration getMessagesConfig() { return messagesConfig; }
     public NamespacedKey getProtectionKey() { return protectionKey; }
     public HeadStorage getHeadStorage() { return headStorage; }
     public KeyItem getKeyItem() { return keyItem; }
