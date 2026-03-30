@@ -9,7 +9,6 @@ import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -25,7 +24,8 @@ public class DeathHeadPlugin extends JavaPlugin {
     private KeyItem keyItem;
     private KeyListener keyListener;
     private DeathListener deathListener;
-    private NamespacedKey protectionKey;
+    private FakeDisplayManager fakeDisplayManager;
+    private String protectionDisplayName;
     private FileConfiguration messagesConfig;
     private FileConfiguration itemsConfig;
 
@@ -36,13 +36,17 @@ public class DeathHeadPlugin extends JavaPlugin {
         saveResourceIfAbsent("items.yml");
         loadCustomConfigs();
 
-        protectionKey = new NamespacedKey(this, "protection_ticket");
+        protectionDisplayName = getItemString("protection-ticket.name", "§b사망 패널티 방지권");
         keyItem = new KeyItem(this);
         headStorage = new HeadStorage(this);
         headStorage.loadAll();
         headStorage.startExpiryScanner();
 
+        PlaceholderUtil.init();
+        fakeDisplayManager = new FakeDisplayManager(this);
+
         deathListener = new DeathListener(this);
+        deathListener.setFakeDisplayManager(fakeDisplayManager);
         keyListener = new KeyListener(this);
         var pm = getServer().getPluginManager();
         pm.registerEvents(deathListener, this);
@@ -69,6 +73,8 @@ public class DeathHeadPlugin extends JavaPlugin {
     public void reloadAllConfigs() {
         reloadConfig();
         loadCustomConfigs();
+        protectionDisplayName = getItemString("protection-ticket.name", "§b사망 패널티 방지권");
+        keyItem.refreshDisplayName();
     }
 
     private void loadCustomConfigs() {
@@ -110,7 +116,7 @@ public class DeathHeadPlugin extends JavaPlugin {
         ItemMeta meta = item.getItemMeta();
         if (meta == null) return item;
 
-        meta.setDisplayName(getItemString("protection-ticket.name", "§b사망 패널티 방지권"));
+        meta.setDisplayName(protectionDisplayName);
 
         List<String> rawLore = itemsConfig.getStringList("protection-ticket.lore");
         if (!rawLore.isEmpty()) {
@@ -119,7 +125,6 @@ public class DeathHeadPlugin extends JavaPlugin {
             meta.setLore(lore);
         }
 
-        meta.getPersistentDataContainer().set(protectionKey, PersistentDataType.BYTE, (byte) 1);
         meta.addItemFlags(ItemFlag.values());
         item.setItemMeta(meta);
         return item;
@@ -155,14 +160,28 @@ public class DeathHeadPlugin extends JavaPlugin {
         return msg;
     }
 
+    /** PlaceholderAPI 플레이스홀더를 포함한 메시지 치환 */
+    public String getMessage(org.bukkit.entity.Player player, String key, String defaultMsg, String... replacements) {
+        String msg = getMessage(key, defaultMsg, replacements);
+        return PlaceholderUtil.replace(player, msg);
+    }
+
     public String getItemString(String key, String defaultVal) {
         return itemsConfig.getString(key, defaultVal).replace('&', '§');
     }
 
     public FileConfiguration getItemsConfig() { return itemsConfig; }
     public FileConfiguration getMessagesConfig() { return messagesConfig; }
-    public NamespacedKey getProtectionKey() { return protectionKey; }
+    public String getProtectionDisplayName() { return protectionDisplayName; }
+
+    public boolean isProtectionTicket(ItemStack item) {
+        if (item == null || item.getType() == Material.AIR) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null || !meta.hasDisplayName()) return false;
+        return meta.getDisplayName().equals(protectionDisplayName);
+    }
     public HeadStorage getHeadStorage() { return headStorage; }
+    public FakeDisplayManager getFakeDisplayManager() { return fakeDisplayManager; }
     public KeyItem getKeyItem() { return keyItem; }
     public DeathListener getDeathListener() { return deathListener; }
     public KeyListener getKeyListener() { return keyListener; }

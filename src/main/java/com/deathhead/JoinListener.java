@@ -31,8 +31,7 @@ public class JoinListener implements Listener {
             player.teleport(spawnLoc);
         }
 
-        // 접속 시 자기 인벤토리 열림 상태
-        plugin.getDeathListener().markInventoryOpen(player.getUniqueId());
+        // 접속 시 인벤토리를 보고 있지 않음
 
         if (player.isOp()) {
             sendOpWelcome(player);
@@ -44,6 +43,7 @@ public class JoinListener implements Listener {
         UUID uuid = event.getPlayer().getUniqueId();
         plugin.getDeathListener().cleanupPlayer(uuid);
         plugin.getKeyListener().cleanupPlayer(uuid);
+        plugin.getFakeDisplayManager().onPlayerQuit(uuid);
     }
 
     private void sendOpWelcome(Player player) {

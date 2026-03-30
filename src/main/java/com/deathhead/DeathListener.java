@@ -7,7 +7,7 @@ import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.*;
-import org.bukkit.entity.Display;
+import org.bukkit.entity.AreaEffectCloud;
 import org.bukkit.entity.Firework;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
@@ -19,9 +19,8 @@ import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.ItemDespawnEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
-import org.bukkit.event.inventory.InventoryCloseEvent;
-import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.FireworkMeta;
@@ -32,14 +31,14 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.util.Transformation;
-import org.joml.AxisAngle4f;
-import org.joml.Vector3f;
 
 import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolLibrary;
+import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.events.PacketAdapter;
 import com.comphenix.protocol.events.PacketEvent;
+
+import com.deathhead.api.DeathHeadDeathEvent;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -57,10 +56,12 @@ public class DeathListener implements Listener {
     private final NamespacedKey ownerNameKey;
     private final Map<UUID, Long> deathCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, GameMode> animatingPlayers = new ConcurrentHashMap<>();
-    private final Set<UUID> inventoryOpen = ConcurrentHashMap.newKeySet();
+    private static final long INVENTORY_TIMEOUT_MS = 2000L;
+    private final Map<UUID, Long> lastInventoryClick = new ConcurrentHashMap<>();
     private final Map<String, PlacedHeadInfo> placedHeads = new ConcurrentHashMap<>();
+    private FakeDisplayManager fakeDisplayManager;
 
-    private record PlacedHeadInfo(UUID displayUuid, int taskId) {}
+    private record PlacedHeadInfo(int fakeDisplayId, int taskId) {}
 
     public DeathListener(DeathHeadPlugin plugin) {
         this.plugin = plugin;
@@ -69,25 +70,73 @@ public class DeathListener implements Listener {
         this.ownerNameKey = new NamespacedKey(plugin, "owner_name");
     }
 
-    // ─── 인벤토리 열림/닫힘 추적 ───
-
-    @EventHandler
-    public void onInventoryOpen(InventoryOpenEvent event) {
-        // 컨테이너(체스트 등)를 열면 자기 인벤토리가 아님
-        inventoryOpen.remove(event.getPlayer().getUniqueId());
+    public void setFakeDisplayManager(FakeDisplayManager manager) {
+        this.fakeDisplayManager = manager;
     }
 
-    @EventHandler
-    public void onInventoryClose(InventoryCloseEvent event) {
-        // 컨테이너를 닫으면 자기 인벤토리로 돌아옴
-        inventoryOpen.add(event.getPlayer().getUniqueId());
-    }
+    // ─── 인벤토리 활성 추적 ───
 
     // ─── 실시간 lore 갱신 ───
 
     public void startLoreUpdater() {
         Bukkit.getScheduler().runTaskTimer(plugin, this::updateAllHeadLores, 20L, 20L);
         registerInventoryPacketListener();
+
+        // 서버 시작 후 1초 뒤에 월드 스캔 (월드 로드 보장)
+        Bukkit.getScheduler().runTaskLater(plugin, this::restoreWorldDisplays, 20L);
+    }
+
+    private void restoreWorldDisplays() {
+        for (World world : Bukkit.getWorlds()) {
+            restoreItems(world.getEntitiesByClass(Item.class));
+            cleanOrphanDisplays(world.getEntitiesByClass(TextDisplay.class));
+        }
+    }
+
+    @EventHandler
+    public void onChunkLoad(ChunkLoadEvent event) {
+        List<Item> items = new ArrayList<>();
+        List<TextDisplay> orphans = new ArrayList<>();
+        for (org.bukkit.entity.Entity e : event.getChunk().getEntities()) {
+            if (e instanceof Item item && item.getScoreboardTags().contains("deathhead")) items.add(item);
+            else if (e instanceof TextDisplay td) orphans.add(td);
+        }
+        if (!items.isEmpty()) restoreItems(items);
+        if (!orphans.isEmpty()) cleanOrphanDisplays(orphans);
+    }
+
+    private void restoreItems(Collection<Item> items) {
+        for (Item item : items) {
+            if (!item.getScoreboardTags().contains("deathhead")) continue;
+            if (fakeDisplayManager.hasDisplay(item.getUniqueId())) continue;
+
+            ItemStack stack = item.getItemStack();
+            ItemMeta meta = stack.getItemMeta();
+            if (meta == null) continue;
+
+            Long expiresAt = meta.getPersistentDataContainer().get(expiresAtKey, PersistentDataType.LONG);
+            String ownerName = meta.getPersistentDataContainer().get(ownerNameKey, PersistentDataType.STRING);
+            if (expiresAt == null || ownerName == null) continue;
+
+            long now = System.currentTimeMillis() / 1000L;
+            if (now >= expiresAt) {
+                item.getScoreboardTags().remove("deathhead");
+                item.setGlowing(false);
+                convertToRottenHead(meta, stack);
+                item.setItemStack(stack);
+            } else {
+                spawnDroppedLabel(item, ownerName, expiresAt);
+            }
+        }
+    }
+
+    private void cleanOrphanDisplays(Collection<TextDisplay> displays) {
+        for (TextDisplay td : displays) {
+            Set<String> tags = td.getScoreboardTags();
+            if (tags.contains("deathhead_block_display") || tags.contains("deathhead_dropped_display")) {
+                td.remove();
+            }
+        }
     }
 
     private void registerInventoryPacketListener() {
@@ -96,29 +145,17 @@ public class DeathListener implements Listener {
             return;
         }
 
-        // 클라이언트가 자기 인벤토리를 열면 CLOSE_WINDOW 패킷(windowId=0)을 보내지 않음
-        // 대신 컨테이너를 닫을 때 CLOSE_WINDOW가 옴
-        // 자기 인벤토리 열림 = CLIENT_COMMAND 패킷이 아니라,
-        // 서버→클라이언트 OPEN_WINDOW 패킷이 없는 상태에서 인벤토리 조작 패킷이 옴
-        // 가장 확실한 방법: CLOSE_WINDOW(서버→클라)로 닫힘 감지, 그 외엔 열림으로 간주
+        ProtocolManager protocolMgr = ProtocolLibrary.getProtocolManager();
 
-        // 서버 → 클라이언트: 컨테이너 열기 (체스트 등)
-        ProtocolLibrary.getProtocolManager().addPacketListener(
-                new PacketAdapter(plugin, PacketType.Play.Server.OPEN_WINDOW) {
-                    @Override
-                    public void onPacketSending(PacketEvent event) {
-                        // 컨테이너를 열면 자기 인벤토리가 아님
-                        inventoryOpen.remove(event.getPlayer().getUniqueId());
-                    }
-                });
-
-        // 클라이언트 → 서버: 컨테이너 닫기
-        ProtocolLibrary.getProtocolManager().addPacketListener(
-                new PacketAdapter(plugin, PacketType.Play.Client.CLOSE_WINDOW) {
+        // 클라이언트 → 서버: 인벤토리 클릭 (windowId=0 이면 자기 인벤토리)
+        protocolMgr.addPacketListener(
+                new PacketAdapter(plugin, PacketType.Play.Client.WINDOW_CLICK) {
                     @Override
                     public void onPacketReceiving(PacketEvent event) {
-                        // 컨테이너를 닫으면 자기 인벤토리로 돌아옴
-                        inventoryOpen.add(event.getPlayer().getUniqueId());
+                        int windowId = event.getPacket().getIntegers().read(0);
+                        if (windowId == 0) {
+                            lastInventoryClick.put(event.getPlayer().getUniqueId(), System.currentTimeMillis());
+                        }
                     }
                 });
 
@@ -127,7 +164,6 @@ public class DeathListener implements Listener {
 
     private void updateAllHeadLores() {
         for (Player player : Bukkit.getOnlinePlayers()) {
-            if (!inventoryOpen.contains(player.getUniqueId())) continue;
             updatePlayerHeadLores(player);
         }
     }
@@ -149,7 +185,6 @@ public class DeathListener implements Listener {
 
             long now = System.currentTimeMillis() / 1000L;
             if (now >= expiresAt) {
-                plugin.getLogger().info("Head " + headId + " decayed in " + player.getName() + "'s inventory (expired: " + expiresAt + ", now: " + now + ")");
                 convertToRottenHead(meta, item);
                 continue;
             }
@@ -207,6 +242,7 @@ public class DeathListener implements Listener {
         droppedEntity.customName(Component.text("DeathHead"));
         droppedEntity.setUnlimitedLifetime(true);
         droppedEntity.setGlowing(true);
+        attachDummyPassenger(droppedEntity);
 
         spawnDroppedLabel(droppedEntity, ownerName, expiresAt);
     }
@@ -216,9 +252,13 @@ public class DeathListener implements Listener {
         Item item = event.getItem();
         if (!item.getScoreboardTags().contains("deathhead")) return;
 
-        for (org.bukkit.entity.Entity passenger : item.getPassengers()) {
-            if (passenger instanceof TextDisplay) passenger.remove();
-        }
+        fakeDisplayManager.removeByVehicle(item.getUniqueId());
+        // 더미 패신저 제거를 1틱 지연 — 픽업 처리와 충돌 방지
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            for (org.bukkit.entity.Entity passenger : item.getPassengers()) {
+                if (passenger.getScoreboardTags().contains("deathhead_dummy")) passenger.remove();
+            }
+        }, 1L);
     }
 
     @EventHandler
@@ -265,17 +305,39 @@ public class DeathListener implements Listener {
         deathCooldowns.put(player.getUniqueId(), now);
 
         if (hasAndConsumeProtectionTicket(player)) {
-            player.sendMessage(Component.text("[!] ", TextColor.color(0x99ffcc))
-                    .append(Component.text("사망 패널티 방지권", TextColor.color(0xccccff)))
-                    .append(Component.text("이 사용되어 아이템이 소실되지 않습니다.", NamedTextColor.WHITE)));
+            String protMsg = plugin.getMessage(player, "protection-used",
+                    "&b&l[!] &f사망 패널티 방지권&7이 사용되어 아이템이 유실되지 않습니다.");
+            player.sendMessage(LEGACY.deserialize(protMsg));
             runDeathAnimation(player, deathLoc, originalMode, null, null, 0, false);
             return;
         }
 
         List<ItemStack> sealedItems = sealItems(player);
 
+        // 커스텀 이벤트 발행 — 다른 플러그인이 취소/수정 가능
+        DeathHeadDeathEvent apiEvent = new DeathHeadDeathEvent(player, deathLoc, sealedItems);
+        Bukkit.getPluginManager().callEvent(apiEvent);
+
+        if (apiEvent.isCancelled()) return;
+
+        if (apiEvent.isPenaltyCancelled()) {
+            // 봉인 취소 — 아이템 복구
+            PlayerInventory inv = player.getInventory();
+            for (ItemStack item : sealedItems) inv.addItem(item);
+            sealedItems.clear();
+        }
+
         if (sealedItems.isEmpty()) {
-            runDeathAnimation(player, deathLoc, originalMode, null, null, 0, true);
+            if (!apiEvent.isAnimationCancelled()) {
+                runDeathAnimation(player, deathLoc, originalMode, null, null, 0, true);
+            }
+            return;
+        }
+
+        if (apiEvent.isHeadDropCancelled()) {
+            if (!apiEvent.isAnimationCancelled()) {
+                runDeathAnimation(player, deathLoc, originalMode, null, null, 0, false);
+            }
             return;
         }
 
@@ -295,11 +357,15 @@ public class DeathListener implements Listener {
         plugin.getHeadStorage().save(data);
 
         sendDeathMessage(player, deathLoc, sealedItems);
-        runDeathAnimation(player, deathLoc, originalMode, headId, sealedItems, expiresAt, false);
+        if (!apiEvent.isAnimationCancelled()) {
+            runDeathAnimation(player, deathLoc, originalMode, headId, sealedItems, expiresAt, false);
+        }
     }
 
     private void sendDeathMessage(Player player, Location deathLoc, List<ItemStack> sealedItems) {
-        player.sendMessage(Component.text("사망 패널티로 인벤토리의 일부 아이템이 땅에 떨어진 머리에 봉인되었습니다.", NamedTextColor.RED));
+        String deathMsg = plugin.getMessage(player, "death",
+                "&c사망 패널티로 인벤토리의 일부 아이템이 땅에 떨어진 머리에 봉인되었습니다.");
+        player.sendMessage(LEGACY.deserialize(deathMsg));
         player.sendMessage(Component.text("사망 좌표: ", NamedTextColor.GRAY)
                 .append(Component.text(deathLoc.getWorld().getName(), NamedTextColor.WHITE))
                 .append(Component.text(" [", NamedTextColor.GRAY))
@@ -387,41 +453,34 @@ public class DeathListener implements Listener {
         SkullMeta meta = (SkullMeta) skull.getItemMeta();
         if (meta == null) return;
 
+        String displayName = PlaceholderUtil.replace(player, "%korean_nick%");
+        if (displayName.equals("%korean_nick%")) displayName = player.getName();
+
         meta.setPlayerProfile(player.getPlayerProfile());
-        meta.displayName(Component.text(player.getName(), NamedTextColor.RED)
+        meta.displayName(Component.text(displayName, NamedTextColor.RED)
                 .append(Component.text("의 머리", NamedTextColor.GRAY))
                 .decoration(TextDecoration.ITALIC, false));
         skull.setItemMeta(meta);
 
         Item droppedItem = location.getWorld().dropItemNaturally(location, skull);
+        droppedItem.setMetadata("deathhead", new FixedMetadataValue(plugin, true));
+        droppedItem.addScoreboardTag("deathhead");
+        droppedItem.setCustomNameVisible(false);
+        droppedItem.customName(Component.text("DeathHead"));
+        droppedItem.setUnlimitedLifetime(true);
         droppedItem.setGlowing(true);
+        attachDummyPassenger(droppedItem);
         spawnEmptyLabel(droppedItem, player.getName());
     }
 
     private void spawnEmptyLabel(Item droppedItem, String playerName) {
-        TextDisplay display = droppedItem.getWorld().spawn(droppedItem.getLocation(), TextDisplay.class, td -> {
-            td.setBillboard(Display.Billboard.CENTER);
-            td.setAlignment(TextDisplay.TextAlignment.CENTER);
-            td.setSeeThrough(false);
-            td.setShadowed(true);
-            td.setBackgroundColor(Color.fromARGB(160, 0, 0, 0));
-            td.setBrightness(new Display.Brightness(15, 15));
-            td.text(LEGACY.deserialize("§c" + playerName + "§7의 머리"));
-            td.setTransformation(new Transformation(
-                    new Vector3f(0f, 1.5f, 0f),
-                    new AxisAngle4f(0, 0, 0, 1),
-                    new Vector3f(1, 1, 1),
-                    new AxisAngle4f(0, 0, 0, 1)
-            ));
-        });
+        Component text = LEGACY.deserialize("§c" + playerName + "§7의 머리");
+        int fakeId = fakeDisplayManager.createRiding(droppedItem, text, 1.0f);
 
-        droppedItem.addPassenger(display);
-
-        // 픽업 시 제거만 (스케줄러 없음)
         final int[] taskId = new int[1];
         taskId[0] = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
             if (droppedItem.isDead() || !droppedItem.isValid()) {
-                if (!display.isDead()) display.remove();
+                fakeDisplayManager.remove(fakeId);
                 Bukkit.getScheduler().cancelTask(taskId[0]);
             }
         }, 40L, 40L);
@@ -441,16 +500,13 @@ public class DeathListener implements Listener {
     // ─── 아이템 봉인 ───
 
     private boolean hasAndConsumeProtectionTicket(Player player) {
-        NamespacedKey protectionKey = plugin.getProtectionKey();
         PlayerInventory inv = player.getInventory();
 
         for (int i = 0; i < inv.getSize(); i++) {
             ItemStack item = inv.getItem(i);
             if (item == null) continue;
-            ItemMeta meta = item.getItemMeta();
-            if (meta == null) continue;
 
-            if (meta.getPersistentDataContainer().has(protectionKey, PersistentDataType.BYTE)) {
+            if (plugin.isProtectionTicket(item)) {
                 if (item.getAmount() > 1) {
                     item.setAmount(item.getAmount() - 1);
                 } else {
@@ -467,7 +523,7 @@ public class DeathListener implements Listener {
         ItemMeta meta = item.getItemMeta();
 
         if (plugin.getKeyItem().isKey(item)) return true;
-        if (meta.getPersistentDataContainer().has(plugin.getProtectionKey(), PersistentDataType.BYTE)) return true;
+        if (plugin.isProtectionTicket(item)) return true;
         if (meta.getPersistentDataContainer().has(headIdKey, PersistentDataType.STRING)) return true;
         return false;
     }
@@ -512,8 +568,11 @@ public class DeathListener implements Listener {
         SkullMeta meta = (SkullMeta) skull.getItemMeta();
         if (meta == null) return;
 
+        String displayName = PlaceholderUtil.replace(player, "%korean_nick%");
+        if (displayName.equals("%korean_nick%")) displayName = player.getName();
+
         meta.setPlayerProfile(player.getPlayerProfile());
-        meta.displayName(Component.text(player.getName(), NamedTextColor.RED)
+        meta.displayName(Component.text(displayName, NamedTextColor.RED)
                 .append(Component.text("의 머리", NamedTextColor.GRAY))
                 .decoration(TextDecoration.ITALIC, false));
         meta.lore(buildSkullLore(sealedItems, expiresAt));
@@ -530,6 +589,7 @@ public class DeathListener implements Listener {
         droppedItem.customName(Component.text("DeathHead"));
         droppedItem.setUnlimitedLifetime(true);
         droppedItem.setGlowing(true);
+        attachDummyPassenger(droppedItem);
 
         spawnDroppedLabel(droppedItem, player.getName(), expiresAt);
     }
@@ -575,7 +635,7 @@ public class DeathListener implements Listener {
         lore.add(Component.empty());
         lore.add(LEGACY.deserialize("§8§m                                    "));
         lore.add(Component.empty());
-        lore.add(LEGACY.deserialize("  §b§l\uD83D\uDD0D §b[인벤토리 Shift+우클릭] §7봉인 아이템 미리보기"));
+        lore.add(LEGACY.deserialize("  §b§l\uD83D\uDD0D §b[설치 후 Shift+우클릭] §7봉인 아이템 미리보기"));
         lore.add(Component.empty());
         return lore;
     }
@@ -600,35 +660,19 @@ public class DeathListener implements Listener {
     // ─── TextDisplay (드롭 아이템) ───
 
     private void spawnDroppedLabel(Item droppedItem, String playerName, long expiresAt) {
-        TextDisplay display = droppedItem.getWorld().spawn(droppedItem.getLocation(), TextDisplay.class, td -> {
-            td.setBillboard(Display.Billboard.CENTER);
-            td.setAlignment(TextDisplay.TextAlignment.CENTER);
-            td.setSeeThrough(false);
-            td.setShadowed(true);
-            td.setBackgroundColor(Color.fromARGB(160, 0, 0, 0));
-            td.setBrightness(new Display.Brightness(15, 15));
-            td.text(buildDroppedLabelText(playerName, expiresAt));
-            td.setTransformation(new Transformation(
-                    new Vector3f(0f, 1.5f, 0f),
-                    new AxisAngle4f(0, 0, 0, 1),
-                    new Vector3f(1, 1, 1),
-                    new AxisAngle4f(0, 0, 0, 1)
-            ));
-            td.addScoreboardTag("deathhead_dropped_display");
-        });
-
-        droppedItem.addPassenger(display);
+        int fakeId = fakeDisplayManager.createRiding(droppedItem,
+                buildDroppedLabelText(playerName, expiresAt), 1.0f);
 
         final int[] taskId = new int[1];
         taskId[0] = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
             if (droppedItem.isDead() || !droppedItem.isValid()) {
-                if (!display.isDead()) display.remove();
+                fakeDisplayManager.remove(fakeId);
                 Bukkit.getScheduler().cancelTask(taskId[0]);
                 return;
             }
             long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
             if (remaining <= 0) {
-                if (!display.isDead()) display.remove();
+                fakeDisplayManager.remove(fakeId);
                 droppedItem.getScoreboardTags().remove("deathhead");
                 droppedItem.setGlowing(false);
                 ItemStack headItem = droppedItem.getItemStack();
@@ -640,57 +684,41 @@ public class DeathListener implements Listener {
                 Bukkit.getScheduler().cancelTask(taskId[0]);
                 return;
             }
-            display.text(buildDroppedLabelText(playerName, expiresAt));
+            fakeDisplayManager.updateText(fakeId, buildDroppedLabelText(playerName, expiresAt));
         }, LABEL_UPDATE_INTERVAL, LABEL_UPDATE_INTERVAL);
     }
 
     private Component buildDroppedLabelText(String playerName, long expiresAt) {
-        String line1 = getDisplayMessage("text-display.dropped.line1", "&c{player}&7의 머리", playerName, expiresAt);
-        String line2 = getDisplayMessage("text-display.dropped.line2", "&c⏳ {time}", playerName, expiresAt);
-        return LEGACY.deserialize(line1.replace('&', '§') + "\n" + line2.replace('&', '§'));
+        return buildLabelFromList("text-display.dropped.lines",
+                List.of("&c{player}&7의 머리", "&c⏳ {time}"), playerName, expiresAt);
     }
 
     private Component buildDroppedLabelExpired(String playerName) {
-        String text = getDisplayMessageRaw("text-display.dropped.expired", "&c{player}&7의 머리\n&4&l부패 완료");
-        return LEGACY.deserialize(text.replace("{player}", playerName).replace('&', '§'));
+        return buildLabelFromList("text-display.dropped.expired-lines",
+                List.of("&c{player}&7의 머리", "&4&l부패 완료"), playerName, 0);
     }
 
     // ─── TextDisplay (설치된 블록) ───
 
     public void spawnBlockLabel(Location blockLoc, String playerName, long expiresAt) {
-        Location displayLoc = blockLoc.clone().add(0.5, 1.5, 0.5);
-
-        TextDisplay display = blockLoc.getWorld().spawn(displayLoc, TextDisplay.class, td -> {
-            td.setBillboard(Display.Billboard.CENTER);
-            td.setAlignment(TextDisplay.TextAlignment.CENTER);
-            td.setSeeThrough(false);
-            td.setShadowed(true);
-            td.setBackgroundColor(Color.fromARGB(160, 0, 0, 0));
-            td.setBrightness(new Display.Brightness(15, 15));
-            td.text(buildPlacedLabelText(playerName, expiresAt));
-            td.addScoreboardTag("deathhead_block_display");
-        });
+        int fakeId = fakeDisplayManager.createStatic(blockLoc,
+                buildPlacedLabelText(playerName, expiresAt), 1.5f);
 
         String locKey = blockLocKey(blockLoc);
 
         final int[] taskId = new int[1];
         taskId[0] = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
-            if (display.isDead()) {
-                placedHeads.remove(locKey);
-                Bukkit.getScheduler().cancelTask(taskId[0]);
-                return;
-            }
             long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
             if (remaining <= 0) {
-                display.remove();
+                fakeDisplayManager.remove(fakeId);
                 placedHeads.remove(locKey);
                 Bukkit.getScheduler().cancelTask(taskId[0]);
                 return;
             }
-            display.text(buildPlacedLabelText(playerName, expiresAt));
+            fakeDisplayManager.updateText(fakeId, buildPlacedLabelText(playerName, expiresAt));
         }, LABEL_UPDATE_INTERVAL, LABEL_UPDATE_INTERVAL);
 
-        placedHeads.put(locKey, new PlacedHeadInfo(display.getUniqueId(), taskId[0]));
+        placedHeads.put(locKey, new PlacedHeadInfo(fakeId, taskId[0]));
     }
 
     public void removeBlockLabel(Location blockLoc) {
@@ -699,19 +727,17 @@ public class DeathListener implements Listener {
         if (info == null) return;
 
         Bukkit.getScheduler().cancelTask(info.taskId());
-        org.bukkit.entity.Entity entity = Bukkit.getEntity(info.displayUuid());
-        if (entity != null && !entity.isDead()) entity.remove();
+        fakeDisplayManager.remove(info.fakeDisplayId());
     }
 
     private Component buildPlacedLabelText(String playerName, long expiresAt) {
-        String line1 = getDisplayMessage("text-display.placed.line1", "&c{player}&7의 머리", playerName, expiresAt);
-        String line2 = getDisplayMessage("text-display.placed.line2", "&c⏳ {time}", playerName, expiresAt);
-        return LEGACY.deserialize(line1.replace('&', '§') + "\n" + line2.replace('&', '§'));
+        return buildLabelFromList("text-display.placed.lines",
+                List.of("&c{player}&7의 머리", "&c⏳ {time}"), playerName, expiresAt);
     }
 
     private Component buildPlacedLabelExpired(String playerName) {
-        String text = getDisplayMessageRaw("text-display.placed.expired", "&c{player}&7의 머리\n&4&l부패 완료");
-        return LEGACY.deserialize(text.replace("{player}", playerName).replace('&', '§'));
+        return buildLabelFromList("text-display.placed.expired-lines",
+                List.of("&c{player}&7의 머리", "&4&l부패 완료"), playerName, 0);
     }
 
     private String blockLocKey(Location loc) {
@@ -720,13 +746,26 @@ public class DeathListener implements Listener {
 
     // ─── messages.yml 헬퍼 ───
 
-    private String getDisplayMessage(String key, String def, String playerName, long expiresAt) {
-        String raw = plugin.getMessagesConfig().getString(key, def);
-        return raw.replace("{player}", playerName).replace("{time}", formatRemaining(expiresAt));
+    private Component buildLabelFromList(String key, List<String> defaults,
+                                         String playerName, long expiresAt) {
+        return buildLabelFromList(key, defaults, playerName, expiresAt, null);
     }
 
-    private String getDisplayMessageRaw(String key, String def) {
-        return plugin.getMessagesConfig().getString(key, def);
+    private Component buildLabelFromList(String key, List<String> defaults,
+                                         String playerName, long expiresAt, Player player) {
+        List<String> lines = plugin.getMessagesConfig().getStringList(key);
+        if (lines.isEmpty()) lines = defaults;
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).replace('&', '§')
+                    .replace("{player}", playerName)
+                    .replace("{time}", formatRemaining(expiresAt));
+            if (player != null) line = PlaceholderUtil.replace(player, line);
+            if (i > 0) sb.append('\n');
+            sb.append(line);
+        }
+        return LEGACY.deserialize(sb.toString());
     }
 
     // ─── 이펙트 ───
@@ -775,6 +814,21 @@ public class DeathListener implements Listener {
 
     // ─── 유틸 ───
 
+    private void attachDummyPassenger(Item item) {
+        AreaEffectCloud cloud = item.getWorld().spawn(item.getLocation(), AreaEffectCloud.class, c -> {
+            c.setRadius(0);
+            c.setDuration(Integer.MAX_VALUE);
+            c.setWaitTime(0);
+            c.setRadiusPerTick(0);
+            c.addScoreboardTag("deathhead_dummy");
+        });
+        item.addPassenger(cloud);
+    }
+
+    public void spawnDroppedLabelPublic(Item droppedItem, String playerName, long expiresAt) {
+        spawnDroppedLabel(droppedItem, playerName, expiresAt);
+    }
+
     public static String formatRemaining(long expiresAt) {
         long remaining = expiresAt - (System.currentTimeMillis() / 1000L);
         if (remaining <= 0) return "부패 완료";
@@ -800,10 +854,42 @@ public class DeathListener implements Listener {
 
     public void cleanupPlayer(UUID uuid) {
         deathCooldowns.remove(uuid);
-        inventoryOpen.remove(uuid);
+        lastInventoryClick.remove(uuid);
     }
 
-    public void markInventoryOpen(UUID uuid) {
-        inventoryOpen.add(uuid);
+    /** 동일 headId를 가진 모든 복사본을 제거 (인벤토리 + 월드 드롭 + 설치 블록) */
+    public void purgeHeadId(String headId) {
+        // 1. 모든 온라인 플레이어 인벤토리에서 제거
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            PlayerInventory inv = player.getInventory();
+            for (int i = 0; i < inv.getSize(); i++) {
+                ItemStack item = inv.getItem(i);
+                if (item == null || item.getType() != Material.PLAYER_HEAD) continue;
+                ItemMeta meta = item.getItemMeta();
+                if (meta == null) continue;
+                String id = meta.getPersistentDataContainer().get(headIdKey, PersistentDataType.STRING);
+                if (headId.equals(id)) {
+                    inv.setItem(i, null);
+                }
+            }
+        }
+
+        // 2. 월드의 드롭 아이템에서 제거
+        for (World world : Bukkit.getWorlds()) {
+            for (Item item : world.getEntitiesByClass(Item.class)) {
+                if (!item.getScoreboardTags().contains("deathhead")) continue;
+                ItemStack stack = item.getItemStack();
+                ItemMeta meta = stack.getItemMeta();
+                if (meta == null) continue;
+                String id = meta.getPersistentDataContainer().get(headIdKey, PersistentDataType.STRING);
+                if (headId.equals(id)) {
+                    fakeDisplayManager.removeByVehicle(item.getUniqueId());
+                    for (org.bukkit.entity.Entity passenger : item.getPassengers()) {
+                        if (passenger.getScoreboardTags().contains("deathhead_dummy")) passenger.remove();
+                    }
+                    item.remove();
+                }
+            }
+        }
     }
 }

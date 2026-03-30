@@ -24,38 +24,13 @@ public class HeadPreviewListener implements Listener {
         this.plugin = plugin;
     }
 
-    /** 인벤토리에서 머리를 Shift+우클릭 → 미리보기 GUI */
+    /** 미리보기 GUI 내부 클릭 차단 */
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        // 미리보기 GUI 내부 클릭 차단 (모든 클릭 타입 — 숫자키, Shift 등 포함)
         if (event.getView().getTitle().startsWith(GUI_TITLE_PREFIX)) {
             event.setCancelled(true);
             event.setResult(org.bukkit.event.Event.Result.DENY);
-            return;
         }
-
-        // Shift+우클릭만 처리
-        if (event.getClick() != ClickType.SHIFT_RIGHT) return;
-
-        ItemStack clicked = event.getCurrentItem();
-        if (clicked == null || clicked.getType() != Material.PLAYER_HEAD) return;
-
-        ItemMeta meta = clicked.getItemMeta();
-        if (meta == null) return;
-
-        String headId = meta.getPersistentDataContainer().get(
-                plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
-        if (headId == null) return;
-
-        HeadData data = plugin.getHeadStorage().get(headId);
-        if (data == null) {
-            event.getWhoClicked().sendMessage(plugin.getMessage("expired", "§7이 머리는 이미 부패했습니다."));
-            event.setCancelled(true);
-            return;
-        }
-
-        event.setCancelled(true);
-        openPreviewGUI((Player) event.getWhoClicked(), data);
     }
 
     private void openPreviewGUI(Player player, HeadData data) {

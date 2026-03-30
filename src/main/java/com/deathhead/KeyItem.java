@@ -1,24 +1,24 @@
 package com.deathhead;
 
 import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.persistence.PersistentDataType;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class KeyItem {
 
-    public static final String KEY_TAG = "deathhead_key";
-
-    private final NamespacedKey keyKey;
     private final DeathHeadPlugin plugin;
+    private String keyDisplayName;
 
     public KeyItem(DeathHeadPlugin plugin) {
         this.plugin = plugin;
-        this.keyKey = new NamespacedKey(plugin, KEY_TAG);
+        refreshDisplayName();
+    }
+
+    public void refreshDisplayName() {
+        this.keyDisplayName = plugin.getItemString("key.name", "§6머리 열쇠");
     }
 
     public ItemStack createKey(int amount) {
@@ -28,7 +28,7 @@ public class KeyItem {
         ItemStack item = new ItemStack(material, amount);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            meta.setDisplayName(plugin.getItemString("key.name", "§6머리 열쇠"));
+            meta.setDisplayName(keyDisplayName);
 
             List<String> rawLore = plugin.getItemsConfig().getStringList("key.lore");
             if (!rawLore.isEmpty()) {
@@ -40,7 +40,6 @@ public class KeyItem {
             int cmd = plugin.getItemsConfig().getInt("key.custom-model-data", 0);
             if (cmd > 0) meta.setCustomModelData(cmd);
 
-            meta.getPersistentDataContainer().set(keyKey, PersistentDataType.BYTE, (byte) 1);
             item.setItemMeta(meta);
         }
         return item;
@@ -49,9 +48,7 @@ public class KeyItem {
     public boolean isKey(ItemStack item) {
         if (item == null || item.getType() == Material.AIR) return false;
         ItemMeta meta = item.getItemMeta();
-        if (meta == null) return false;
-        return meta.getPersistentDataContainer().has(keyKey, PersistentDataType.BYTE);
+        if (meta == null || !meta.hasDisplayName()) return false;
+        return meta.getDisplayName().equals(keyDisplayName);
     }
-
-    public NamespacedKey getKeyKey() { return keyKey; }
 }

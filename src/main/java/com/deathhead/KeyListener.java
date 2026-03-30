@@ -115,6 +115,29 @@ public class KeyListener implements Listener {
             droppedItem.setUnlimitedLifetime(true);
             droppedItem.setGlowing(true);
             droppedItem.setMetadata("deathhead", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+
+            // ClearLag 보호용 더미 패신저
+            org.bukkit.entity.AreaEffectCloud cloud = block.getWorld().spawn(
+                    droppedItem.getLocation(), org.bukkit.entity.AreaEffectCloud.class, c -> {
+                c.setRadius(0);
+                c.setDuration(Integer.MAX_VALUE);
+                c.setWaitTime(0);
+                c.setRadiusPerTick(0);
+                c.addScoreboardTag("deathhead_dummy");
+            });
+            droppedItem.addPassenger(cloud);
+
+            // TextDisplay 라벨 생성
+            plugin.getDeathListener().spawnDroppedLabelPublic(droppedItem, data.getOwnerName(), data.getExpiresAt());
+        }
+    }
+
+    @EventHandler
+    public void onKeyPlace(BlockPlaceEvent event) {
+        ItemStack item = event.getItemInHand();
+        if (plugin.getKeyItem().isKey(item) || plugin.isProtectionTicket(item)) {
+            event.setCancelled(true);
+            return;
         }
     }
 
@@ -147,14 +170,26 @@ public class KeyListener implements Listener {
     public void onPlayerInteract(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
 
-        Player player = event.getPlayer();
-        ItemStack hand = player.getInventory().getItemInMainHand();
-
-        if (!plugin.getKeyItem().isKey(hand)) return;
-
         Block block = event.getClickedBlock();
         if (block == null) return;
         if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) return;
+
+        Player player = event.getPlayer();
+        ItemStack hand = player.getInventory().getItemInMainHand();
+
+        // 열쇠가 아니고 쉬프트+우클릭이면 미리보기
+        if (!plugin.getKeyItem().isKey(hand)) {
+            if (!player.isSneaking()) return;
+            if (!(block.getState() instanceof Skull skull)) return;
+            String headId = skull.getPersistentDataContainer().get(
+                    plugin.getDeathListener().getHeadIdKey(), PersistentDataType.STRING);
+            if (headId == null) return;
+            HeadData data = plugin.getHeadStorage().get(headId);
+            if (data == null || data.getItems().isEmpty()) return;
+            event.setCancelled(true);
+            openBlockPreview(player, data);
+            return;
+        }
 
         long now = System.currentTimeMillis();
         Long lastUse = useCooldowns.get(player.getUniqueId());
@@ -193,11 +228,24 @@ public class KeyListener implements Listener {
         }
 
         plugin.getHeadStorage().remove(headId);
+        plugin.getDeathListener().purgeHeadId(headId);
 
         player.sendMessage(plugin.getMessage("retrieve", "§a유실된 아이템을 되찾았습니다!"));
 
         block.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, dropLoc, 15, 0.3, 0.3, 0.3, 0);
         player.playSound(dropLoc, org.bukkit.Sound.BLOCK_CHEST_OPEN, 1f, 1.2f);
+    }
+
+    private void openBlockPreview(Player player, HeadData data) {
+        java.util.List<ItemStack> items = data.getItems();
+        int rows = Math.max(1, Math.min(6, (items.size() + 8) / 9));
+        int size = rows * 9;
+        String title = "§8봉인된 아이템 §7— §c" + data.getOwnerName();
+        org.bukkit.inventory.Inventory gui = org.bukkit.Bukkit.createInventory(null, size, title);
+        for (int i = 0; i < items.size() && i < size; i++) {
+            gui.setItem(i, items.get(i).clone());
+        }
+        player.openInventory(gui);
     }
 
     public void cleanupPlayer(UUID uuid) {

@@ -25,12 +25,21 @@ config-reloaded: "&aDeathHead 설정을 리로드했습니다."
 
 # TextDisplay (머리 위 표시)
 # {player} = 플레이어 이름, {time} = 남은 시간
+# 줄을 자유롭게 추가/제거할 수 있습니다.
 text-display:
   dropped:
-    line1: "&c{player}&7의 머리"
-    line2: "&c⏳ {time}"
-    expired: "&c{player}&7의 머리\n&4&l부패 완료"
+    lines:
+      - "&c{player}&7의 머리"
+      - "&c⏳ {time}"
+      - ""
+      - "&c부패되기 전에 봉인해제"
+    expired-lines:
+      - "&c{player}&7의 머리"
+      - "&4&l부패 완료"
   placed:
-    line1: "&c{player}&7의 머리"
-    line2: "&c⏳ {time}"
-    expired: "&c{player}&7의 머리\n&4&l부패 완료"
+    lines:
+      - "&c{player}&7의 머리"
+      - "&c⏳ {time}"
+    expired-lines:
+      - "&c{player}&7의 머리"
+      - "&4&l부패 완료"
